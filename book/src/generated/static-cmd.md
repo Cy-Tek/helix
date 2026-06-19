@@ -80,6 +80,7 @@
 | `search_selection_detect_word_boundaries` | Use current selection as the search pattern, automatically wrapping with `\b` on word boundaries | normal: `` * ``, select: `` * `` |
 | `make_search_word_bounded` | Modify current search to make it word bounded |  |
 | `global_search` | Global search in workspace folder | normal: `` <space>/ ``, select: `` <space>/ `` |
+| `buffer_search` | Search in current buffer | normal: `` <space>sb ``, select: `` <space>sb `` |
 | `extend_line` | Select current line, if already selected, extend to another line based on the anchor |  |
 | `extend_line_below` | Select current line, if already selected, extend to next line | normal: `` x ``, select: `` x `` |
 | `extend_line_above` | Select current line, if already selected, extend to previous line |  |
@@ -97,23 +98,32 @@
 | `insert_mode` | Insert before selection | normal: `` i ``, select: `` i `` |
 | `append_mode` | Append after selection | normal: `` a ``, select: `` a `` |
 | `command_mode` | Enter command mode | normal: `` : ``, select: `` : `` |
-| `file_picker` | Open file picker | normal: `` <space>f ``, select: `` <space>f `` |
-| `file_picker_in_current_buffer_directory` | Open file picker at current buffer's directory |  |
-| `file_picker_in_current_directory` | Open file picker at current working directory | normal: `` <space>F ``, select: `` <space>F `` |
-| `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |
-| `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
-| `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
+| `file_picker` | Open file picker | normal: `` <space>ff ``, select: `` <space>ff `` |
+| `file_picker_in_current_buffer_directory` | Open file picker at current buffer's directory | normal: `` <space>f. ``, select: `` <space>f. `` |
+| `file_picker_in_current_directory` | Open file picker at current working directory | normal: `` <space>fF ``, select: `` <space>fF `` |
+| `file_explorer` | Open file explorer in workspace root | normal: `` <space>fe ``, select: `` <space>fe `` |
+| `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory |  |
+| `file_explorer_in_current_directory` | Open file explorer at current working directory | normal: `` <space>fE ``, select: `` <space>fE `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
-| `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
+| `recent_file_picker` | Open recent file picker for current project | normal: `` <space>fr ``, select: `` <space>fr `` |
+| `all_recent_file_picker` | Open all recent file picker | normal: `` <space>fR ``, select: `` <space>fR `` |
+| `buffer_picker` | Open project buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
+| `all_buffer_picker` | Open all-buffer picker | normal: `` <space>pB ``, select: `` <space>pB `` |
+| `project_switcher` | Open project switcher | normal: `` <space>pp ``, select: `` <space>pp `` |
+| `project_file_picker` | Open file picker in current project | normal: `` <space>pf ``, select: `` <space>pf `` |
+| `project_file_picker_in_other_project` | Choose project and open file picker | normal: `` <space>pF ``, select: `` <space>pF `` |
+| `project_search` | Search in current project | normal: `` <space>ps ``, select: `` <space>ps `` |
+| `project_search_in_other_project` | Choose project and search | normal: `` <space>pS ``, select: `` <space>pS `` |
+| `project_buffer_picker` | Open project buffer picker | normal: `` <space>pb ``, select: `` <space>pb `` |
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
-| `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |
+| `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>ss ``, select: `` <space>ss `` |
 | `changed_file_picker` | Open changed file picker | normal: `` <space>g ``, select: `` <space>g `` |
 | `select_references_to_symbol_under_cursor` | Select symbol references | normal: `` <space>h ``, select: `` <space>h `` |
 | `workspace_symbol_picker` | Open workspace symbol picker |  |
 | `syntax_workspace_symbol_picker` | Open workspace symbol picker from syntax information |  |
-| `lsp_or_syntax_workspace_symbol_picker` | Open workspace symbol picker from LSP or syntax information | normal: `` <space>S ``, select: `` <space>S `` |
+| `lsp_or_syntax_workspace_symbol_picker` | Open workspace symbol picker from LSP or syntax information | normal: `` <space>S ``, `` <space>sS ``, select: `` <space>S ``, `` <space>sS `` |
 | `diagnostics_picker` | Open diagnostic picker | normal: `` <space>d ``, select: `` <space>d `` |
 | `workspace_diagnostics_picker` | Open workspace diagnostic picker | normal: `` <space>D ``, select: `` <space>D `` |
 | `last_picker` | Open last picker | normal: `` <space>' ``, select: `` <space>' `` |
@@ -198,7 +208,7 @@
 | `replace_selections_with_primary_clipboard` | Replace selections by primary clipboard |  |
 | `paste_after` | Paste after selection | normal: `` p ``, select: `` p `` |
 | `paste_before` | Paste before selection | normal: `` P ``, select: `` P `` |
-| `paste_clipboard_after` | Paste clipboard after selections | normal: `` <space>p ``, select: `` <space>p `` |
+| `paste_clipboard_after` | Paste clipboard after selections |  |
 | `paste_clipboard_before` | Paste clipboard before selections | normal: `` <space>P ``, select: `` <space>P `` |
 | `paste_primary_clipboard_after` | Paste primary clipboard after selections |  |
 | `paste_primary_clipboard_before` | Paste primary clipboard before selections |  |

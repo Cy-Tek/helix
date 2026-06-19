@@ -9,6 +9,7 @@ use crate::{
     handlers::Handlers,
     info::Info,
     input::KeyEvent,
+    project::{ProjectId, ProjectRegistry},
     register::Registers,
     theme::{self, Theme},
     tree::{self, Tree},
@@ -1193,6 +1194,7 @@ pub struct Editor {
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
+    pub projects: ProjectRegistry,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1340,11 +1342,21 @@ impl Editor {
         // HAXX: offset the render area height by 1 to account for prompt/commandline
         area.height -= 1;
 
+        let mut projects = ProjectRegistry::load();
+        if projects.active_project().is_none() {
+            let (root, no_workspace_found) = helix_loader::find_workspace();
+            if !no_workspace_found {
+                let project = projects.ensure_project(root);
+                projects.set_active(Some(project));
+            }
+        }
+
         Self {
             mode: Mode::Normal,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
+            projects,
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
@@ -1710,6 +1722,7 @@ impl Editor {
         doc.language_servers.clear();
         doc.set_path(Some(path));
         doc.detect_editor_config();
+        self.assign_document_to_path_project(doc_id, path);
         self.refresh_doc_language(doc_id)
     }
 
@@ -1912,6 +1925,7 @@ impl Editor {
                 }
 
                 self.replace_document_in_view(view_id, id);
+                self.record_project_focus_for_document(id);
 
                 dispatch(DocumentFocusLost {
                     editor: self,
@@ -1924,6 +1938,7 @@ impl Editor {
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
                 doc.mark_as_focused();
+                self.record_project_focus_for_document(id);
                 return;
             }
             Action::HorizontalSplit | Action::VerticalSplit => {
@@ -1947,11 +1962,13 @@ impl Editor {
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
                 doc.mark_as_focused();
+                self.record_project_focus_for_document(id);
                 focus_lost
             }
         };
 
         self._refresh();
+        self.record_project_focus_for_document(id);
         if let Some(focus_lost) = focust_lost {
             dispatch(DocumentFocusLost {
                 editor: self,
@@ -1975,6 +1992,7 @@ impl Editor {
         let stream = UnboundedReceiverStream::new(save_receiver).flatten();
         self.save_queue.push(stream);
 
+        self.assign_document_to_current_project(id);
         id
     }
 
@@ -2041,6 +2059,7 @@ impl Editor {
             doc.set_version_control_head(self.diff_providers.get_current_head_name(&path));
 
             let id = self.new_document(doc);
+            self.assign_document_to_path_project(id, &path);
             self.launch_language_servers(id);
 
             helix_event::dispatch(DocumentDidOpen {
@@ -2062,6 +2081,9 @@ impl Editor {
             doc.remove_view(id);
         }
         self.tree.remove(id);
+        if let Some(doc_id) = self.tree.try_get(self.tree.focus).map(|view| view.doc) {
+            self.record_project_focus_for_document(doc_id);
+        }
         self._refresh();
     }
 
@@ -2114,6 +2136,7 @@ impl Editor {
         }
 
         let doc = self.documents.remove(&doc_id).unwrap();
+        self.projects.remove_document(doc_id);
 
         // If the document we removed was visible in all views, we will have no more views. We don't
         // want to close the editor just for a simple buffer close, so we need to create a new view
@@ -2137,6 +2160,9 @@ impl Editor {
             doc.mark_as_focused();
         }
 
+        if let Some(doc_id) = self.tree.try_get(self.tree.focus).map(|view| view.doc) {
+            self.record_project_focus_for_document(doc_id);
+        }
         self._refresh();
 
         helix_event::dispatch(DocumentDidClose { editor: self, doc });
@@ -2205,6 +2231,8 @@ impl Editor {
 
         let prev_id = std::mem::replace(&mut self.tree.focus, view_id);
         doc_mut!(self).mark_as_focused();
+        let focused_doc = self.tree.get(view_id).doc;
+        self.record_project_focus_for_document(focused_doc);
 
         let focus_lost = self.tree.get(prev_id).doc;
         dispatch(DocumentFocusLost {
@@ -2260,6 +2288,168 @@ impl Editor {
     #[inline]
     pub fn documents(&self) -> impl Iterator<Item = &Document> {
         self.documents.values()
+    }
+
+    pub fn project_documents(&self, project: ProjectId) -> impl Iterator<Item = &Document> {
+        self.projects
+            .documents_for_project(project)
+            .filter_map(|id| self.documents.get(&id))
+    }
+
+    pub fn active_project(&self) -> Option<&crate::project::Project> {
+        self.projects
+            .active_project()
+            .and_then(|project| self.projects.project(project))
+    }
+
+    pub fn active_project_id(&self) -> Option<ProjectId> {
+        self.projects.active_project()
+    }
+
+    pub fn active_project_root(&self) -> Option<&Path> {
+        self.active_project().map(|project| project.root.as_path())
+    }
+
+    pub fn active_project_name(&self) -> Option<&str> {
+        self.active_project().map(|project| project.display_name())
+    }
+
+    pub fn active_project_documents(&self) -> Vec<DocumentId> {
+        self.active_project_id()
+            .map(|project| {
+                self.projects
+                    .documents_for_project(project)
+                    .filter(|id| self.documents.contains_key(id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn active_project_document_count(&self) -> usize {
+        self.active_project_documents().len()
+    }
+
+    pub fn ensure_project_for_root(&mut self, root: impl Into<PathBuf>) -> ProjectId {
+        let project = self.projects.ensure_project(root);
+        self.persist_projects();
+        project
+    }
+
+    pub fn ensure_project_for_path(&mut self, path: &Path) -> ProjectId {
+        let search_start = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        self.ensure_project_for_root(helix_loader::find_workspace_in(search_start).0)
+    }
+
+    fn project_for_path_or_workspace(&mut self, path: &Path) -> Option<ProjectId> {
+        if let Some(project) = self.projects.project_for_path(path) {
+            return Some(project);
+        }
+
+        let search_start = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        let (root, no_workspace_found) = helix_loader::find_workspace_in(search_start);
+        if no_workspace_found {
+            None
+        } else {
+            Some(self.ensure_project_for_root(root))
+        }
+    }
+
+    pub fn switch_project(&mut self, project: ProjectId) -> io::Result<Option<DocumentId>> {
+        let Some(root) = self
+            .projects
+            .project(project)
+            .map(|project| project.root.clone())
+        else {
+            return Ok(None);
+        };
+
+        self.projects.set_active(Some(project));
+        self.set_cwd(&root)?;
+
+        let doc_id = self
+            .projects
+            .documents_for_project(project)
+            .find(|id| self.documents.contains_key(id));
+        if let Some(doc_id) = doc_id {
+            self.switch(doc_id, Action::Replace);
+        }
+
+        self.persist_projects();
+        Ok(doc_id)
+    }
+
+    pub fn activate_project_for_path(&mut self, path: &Path) -> io::Result<ProjectId> {
+        let project = self.ensure_project_for_path(path);
+        self.switch_project(project)?;
+        Ok(project)
+    }
+
+    fn assign_document_to_current_project(&mut self, doc_id: DocumentId) {
+        let project = self.projects.active_project().or_else(|| {
+            let (root, no_workspace_found) = helix_loader::find_workspace();
+            (!no_workspace_found).then(|| self.projects.ensure_project(root))
+        });
+        if let Some(project) = project {
+            self.projects.assign_document(doc_id, project);
+        }
+    }
+
+    fn assign_document_to_path_project(&mut self, doc_id: DocumentId, path: &Path) {
+        self.projects.record_global_recent_file(path);
+        if let Some(project) = self.project_for_path_or_workspace(path) {
+            self.projects.assign_document(doc_id, project);
+            self.projects.record_recent_file(project, path);
+        } else {
+            self.projects.remove_document(doc_id);
+        }
+        self.persist_projects();
+    }
+
+    fn record_project_focus_for_document(&mut self, doc_id: DocumentId) {
+        if let Some(path) = self
+            .documents
+            .get(&doc_id)
+            .and_then(|doc| doc.path().map(Path::to_path_buf))
+        {
+            self.projects.record_global_recent_file(&path);
+            if let Some(project) = self
+                .projects
+                .project_for_document(doc_id)
+                .or_else(|| self.project_for_path_or_workspace(&path))
+            {
+                self.projects.set_active(Some(project));
+                self.projects.assign_document(doc_id, project);
+                self.projects.record_recent_file(project, path);
+            } else {
+                self.projects.remove_document(doc_id);
+            }
+            self.persist_projects();
+            return;
+        }
+
+        if let Some(project) = self
+            .projects
+            .project_for_document(doc_id)
+            .or_else(|| self.projects.active_project())
+        {
+            self.projects.set_active(Some(project));
+            self.projects.assign_document(doc_id, project);
+            self.persist_projects();
+        }
+    }
+
+    fn persist_projects(&self) {
+        if let Err(err) = self.projects.save() {
+            log::error!("failed to save project registry: {err}");
+        }
     }
 
     #[inline]
@@ -2532,6 +2722,7 @@ impl Editor {
                 selection = selection.map(transaction.changes()).ensure_invariants(text);
             }
             self.replace_document_in_view(view_id, dest_doc_id);
+            self.record_project_focus_for_document(dest_doc_id);
             dispatch(DocumentFocusLost {
                 editor: self,
                 doc: old_doc_id,
@@ -2540,6 +2731,187 @@ impl Editor {
         let (view, doc) = current!(self);
         doc.set_selection(view_id, selection);
         view.ensure_cursor_in_view_center(doc, self.config.load().scrolloff);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::{
+        completion::{CompletionEvent, CompletionHandler},
+        lsp::{
+            DocumentColorsEvent, DocumentLinksEvent, PullAllDocumentsDiagnosticsEvent,
+            PullDiagnosticsEvent, SignatureHelpEvent,
+        },
+        word_index, AutoSaveEvent, Handlers,
+    };
+    use arc_swap::ArcSwap;
+    use helix_core::{syntax, Rope};
+    use std::sync::Arc;
+
+    fn test_config() -> Config {
+        Config {
+            lsp: LspConfig {
+                enable: false,
+                ..Default::default()
+            },
+            word_completion: WordCompletion {
+                enable: false,
+                ..Default::default()
+            },
+            insecure: true,
+            ..Default::default()
+        }
+    }
+
+    fn test_syntax_loader() -> syntax::Loader {
+        let config = helix_loader::config::default_lang_config();
+        syntax::Loader::new(config.try_into().unwrap()).unwrap()
+    }
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel::<CompletionEvent>(1);
+        let (signature_hints, _) = tokio::sync::mpsc::channel::<SignatureHelpEvent>(1);
+        let (auto_save, _) = tokio::sync::mpsc::channel::<AutoSaveEvent>(1);
+        let (document_colors, _) = tokio::sync::mpsc::channel::<DocumentColorsEvent>(1);
+        let (document_links, _) = tokio::sync::mpsc::channel::<DocumentLinksEvent>(1);
+        let (pull_diagnostics, _) = tokio::sync::mpsc::channel::<PullDiagnosticsEvent>(1);
+        let (pull_all_documents_diagnostics, _) =
+            tokio::sync::mpsc::channel::<PullAllDocumentsDiagnosticsEvent>(1);
+
+        Handlers {
+            completions: CompletionHandler::new(completion_tx),
+            signature_hints,
+            auto_save,
+            document_colors,
+            document_links,
+            word_index: word_index::Handler::spawn(),
+            pull_diagnostics,
+            pull_all_documents_diagnostics,
+        }
+    }
+
+    fn test_editor() -> Editor {
+        let config = Arc::new(ArcSwap::from_pointee(test_config()));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            Arc::new(theme::Loader::new(&[])),
+            Arc::new(ArcSwap::from_pointee(test_syntax_loader())),
+            config,
+            test_handlers(),
+        );
+        editor.projects = ProjectRegistry::default();
+        editor
+    }
+
+    fn add_project_document(editor: &mut Editor, project: ProjectId, path: &Path) -> DocumentId {
+        let mut doc = Document::from(
+            Rope::default(),
+            None,
+            editor.config.clone(),
+            editor.syn_loader.clone(),
+        );
+        doc.set_path(Some(path));
+
+        let doc_id = editor.new_document(doc);
+        editor.projects.assign_document(doc_id, project);
+        doc_id
+    }
+
+    fn make_project(root: &Path, file_name: &str) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        let file = root.join(file_name);
+        std::fs::write(&file, "").unwrap();
+        file
+    }
+
+    #[tokio::test]
+    async fn close_document_activates_replacement_buffer_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let alpha_file = make_project(&temp.path().join("alpha"), "alpha.rs");
+        let beta_file = make_project(&temp.path().join("beta"), "beta.rs");
+
+        let mut editor = test_editor();
+        let alpha = editor.projects.ensure_project(temp.path().join("alpha"));
+        let beta = editor.projects.ensure_project(temp.path().join("beta"));
+        let alpha_doc = add_project_document(&mut editor, alpha, &alpha_file);
+        let beta_doc = add_project_document(&mut editor, beta, &beta_file);
+
+        editor.switch(alpha_doc, Action::VerticalSplit);
+        editor.switch(beta_doc, Action::Replace);
+        assert_eq!(editor.active_project_id(), Some(beta));
+
+        assert!(editor.close_document(beta_doc, true).is_ok());
+
+        assert_eq!(view!(editor).doc, alpha_doc);
+        assert_eq!(editor.active_project_id(), Some(alpha));
+    }
+
+    #[tokio::test]
+    async fn focusing_split_activates_focused_buffer_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let alpha_file = make_project(&temp.path().join("alpha"), "alpha.rs");
+        let beta_file = make_project(&temp.path().join("beta"), "beta.rs");
+
+        let mut editor = test_editor();
+        let alpha = editor.projects.ensure_project(temp.path().join("alpha"));
+        let beta = editor.projects.ensure_project(temp.path().join("beta"));
+        let alpha_doc = add_project_document(&mut editor, alpha, &alpha_file);
+        let beta_doc = add_project_document(&mut editor, beta, &beta_file);
+
+        editor.switch(alpha_doc, Action::VerticalSplit);
+        let alpha_view = editor.tree.focus;
+        editor.switch(beta_doc, Action::VerticalSplit);
+        assert_eq!(editor.active_project_id(), Some(beta));
+
+        editor.focus(alpha_view);
+
+        assert_eq!(view!(editor).doc, alpha_doc);
+        assert_eq!(editor.active_project_id(), Some(alpha));
+    }
+
+    #[tokio::test]
+    async fn closing_focused_split_activates_remaining_buffer_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let alpha_file = make_project(&temp.path().join("alpha"), "alpha.rs");
+        let beta_file = make_project(&temp.path().join("beta"), "beta.rs");
+
+        let mut editor = test_editor();
+        let alpha = editor.projects.ensure_project(temp.path().join("alpha"));
+        let beta = editor.projects.ensure_project(temp.path().join("beta"));
+        let alpha_doc = add_project_document(&mut editor, alpha, &alpha_file);
+        let beta_doc = add_project_document(&mut editor, beta, &beta_file);
+
+        editor.switch(alpha_doc, Action::VerticalSplit);
+        editor.switch(beta_doc, Action::VerticalSplit);
+        assert_eq!(editor.active_project_id(), Some(beta));
+
+        editor.close(editor.tree.focus);
+
+        assert_eq!(view!(editor).doc, alpha_doc);
+        assert_eq!(editor.active_project_id(), Some(alpha));
+    }
+
+    #[tokio::test]
+    async fn jumplist_jump_activates_destination_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let alpha_file = make_project(&temp.path().join("alpha"), "alpha.rs");
+        let beta_file = make_project(&temp.path().join("beta"), "beta.rs");
+
+        let mut editor = test_editor();
+        let alpha = editor.projects.ensure_project(temp.path().join("alpha"));
+        let beta = editor.projects.ensure_project(temp.path().join("beta"));
+        let alpha_doc = add_project_document(&mut editor, alpha, &alpha_file);
+        let beta_doc = add_project_document(&mut editor, beta, &beta_file);
+
+        editor.switch(alpha_doc, Action::VerticalSplit);
+        editor.switch(beta_doc, Action::Replace);
+        assert_eq!(editor.active_project_id(), Some(beta));
+
+        editor.jump_backward(editor.tree.focus, 1);
+
+        assert_eq!(view!(editor).doc, alpha_doc);
+        assert_eq!(editor.active_project_id(), Some(alpha));
     }
 }
 

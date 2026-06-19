@@ -259,7 +259,7 @@ pub fn merge_toml_values(left: toml::Value, right: toml::Value, merge_depth: usi
 /// Used as a ceiling dir for LSP root resolution, the filepicker and potentially as a future filewatching root
 ///
 /// This function starts searching the FS upward from the CWD
-/// and returns the first directory that contains either `.git`, `.svn`, `.jj` or `.helix`.
+/// and returns the first directory that contains either `.git`, `.svn`, `.jj`, `.helix` or `project.json`.
 /// If no workspace was found returns (CWD, true).
 /// Otherwise (workspace, false) is returned
 pub fn find_workspace() -> (PathBuf, bool) {
@@ -274,6 +274,7 @@ pub fn find_workspace_in(dir: impl AsRef<Path>) -> (PathBuf, bool) {
             || ancestor.join(".svn").exists()
             || ancestor.join(".jj").exists()
             || ancestor.join(".helix").exists()
+            || ancestor.join("project.json").exists()
         {
             return (ancestor.to_owned(), false);
         }
@@ -364,5 +365,32 @@ mod merge_toml_tests {
                 .unwrap(),
             &vec![Value::String("lsp".into())]
         )
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::find_workspace_in;
+
+    #[test]
+    fn git_directory_marks_workspace_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("game_engine_2d");
+        let nested = root.join("src/ecs");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(find_workspace_in(&nested), (root, false));
+    }
+
+    #[test]
+    fn project_json_marks_workspace_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("game_engine_2d");
+        let nested = root.join("src/ecs");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("project.json"), "{}").unwrap();
+
+        assert_eq!(find_workspace_in(&nested), (root, false));
     }
 }

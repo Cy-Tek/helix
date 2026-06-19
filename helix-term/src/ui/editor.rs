@@ -679,11 +679,37 @@ impl EditorView {
             .theme
             .try_get("ui.bufferline")
             .unwrap_or_else(|| editor.theme.get("ui.statusline.inactive"));
+        let project_style = editor
+            .theme
+            .try_get("ui.statusline.active")
+            .or_else(|| editor.theme.try_get("ui.statusline"))
+            .unwrap_or(bufferline_active)
+            .patch(
+                editor
+                    .theme
+                    .try_get("ui.text.directory")
+                    .unwrap_or_default(),
+            )
+            .add_modifier(Modifier::BOLD);
 
         let mut x = viewport.x;
         let current_doc = view!(editor).doc;
+        let active_project = editor.active_project_id();
 
-        for doc in editor.documents() {
+        if let Some(name) = editor.active_project_name() {
+            let text = format!(" [{}] │ ", name);
+            let used_width = viewport.x.saturating_sub(x);
+            let rem_width = surface.area.width.saturating_sub(used_width);
+            x = surface
+                .set_stringn(x, viewport.y, &text, rem_width as usize, project_style)
+                .0;
+        }
+
+        for doc in editor.documents().filter(|doc| {
+            active_project.is_none_or(|project| {
+                editor.projects.project_for_document(doc.id()) == Some(project)
+            })
+        }) {
             let fname = doc
                 .path()
                 .unwrap_or(&scratch)
@@ -1609,7 +1635,7 @@ impl Component for EditorView {
         use helix_view::editor::BufferLine;
         let use_bufferline = match config.bufferline {
             BufferLine::Always => true,
-            BufferLine::Multiple if cx.editor.documents.len() > 1 => true,
+            BufferLine::Multiple if cx.editor.active_project_document_count() > 1 => true,
             _ => false,
         };
 

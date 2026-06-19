@@ -586,6 +586,118 @@ fn format(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
     Ok(())
 }
 
+fn current_line_comment_token(editor: &Editor) -> String {
+    let (view, doc) = current_ref!(editor);
+    let cursor = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    let cursor_line = doc.text().char_to_line(cursor);
+
+    doc.language_config()
+        .and_then(|config| config.comment_tokens.as_ref())
+        .and_then(|tokens| {
+            comment::get_comment_token(doc.text().slice(..), tokens, cursor_line)
+                .or_else(|| tokens.first().map(|token| token.as_str()))
+        })
+        .unwrap_or("//")
+        .to_string()
+}
+
+fn selected_comment_box_lines(token: &str, selected: &str) -> Vec<String> {
+    let lines = comment::comment_box_text_lines(token, selected);
+    if !lines.is_empty() {
+        return lines;
+    }
+
+    selected
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn selected_trailing_blank_lines(selected: &str) -> &str {
+    let Some((idx, ch)) = selected
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_whitespace())
+    else {
+        return selected;
+    };
+
+    let suffix = &selected[idx + ch.len_utf8()..];
+    if suffix.contains('\n') {
+        suffix
+    } else {
+        ""
+    }
+}
+
+fn comment_box(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let mut style = comment::CommentBoxStyle::Box;
+    let title_args = if args
+        .first()
+        .and_then(|arg| arg.parse::<comment::CommentBoxStyle>().ok())
+        .map(|parsed| {
+            style = parsed;
+        })
+        .is_some()
+    {
+        args.iter().skip(1)
+    } else {
+        args.iter().skip(0)
+    };
+    let title = title_args
+        .map(|arg| arg.as_ref())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let explicit_lines = (!title.trim().is_empty()).then(|| vec![title.trim().to_string()]);
+    let token = current_line_comment_token(cx.editor);
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text();
+    let selection = doc.selection(view.id).clone();
+
+    let transaction = Transaction::change_by_and_with_selection(text, &selection, |range| {
+        let selected = range.slice(text.slice(..)).to_string();
+        let lines = explicit_lines
+            .clone()
+            .unwrap_or_else(|| selected_comment_box_lines(&token, &selected));
+        let lines = if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        };
+        let mut replacement = comment::format_comment_box(
+            &token,
+            style,
+            match style {
+                comment::CommentBoxStyle::Ruler => comment::CommentBoxAlignment::Center,
+                _ => comment::CommentBoxAlignment::Left,
+            },
+            comment::DEFAULT_COMMENT_BOX_WIDTH,
+            &lines,
+        );
+        replacement.push_str(selected_trailing_blank_lines(&selected));
+        let end = range.from() + replacement.chars().count();
+
+        (
+            (range.from(), range.to(), Some(replacement.into())),
+            Some(Range::new(range.from(), end).with_direction(range.direction())),
+        )
+    });
+
+    doc.apply(&transaction, view.id);
+
+    Ok(())
+}
+
 fn set_indent_style(
     cx: &mut compositor::Context,
     args: Args,
@@ -3086,6 +3198,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature {
             positionals: (0, Some(1)),
             flags: &[WRITE_NO_FORMAT_FLAG],
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "comment-box",
+        aliases: &["box-comment"],
+        doc: "Format the current selection as an 80-column line-comment heading. Accepts an optional style and title.",
+        fun: comment_box,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
             ..Signature::DEFAULT
         },
     },

@@ -51,6 +51,7 @@ use helix_view::{
     info::Info,
     input::KeyEvent,
     keyboard::KeyCode,
+    project::{Project, ProjectId},
     theme::Style,
     tree,
     view::View,
@@ -383,6 +384,7 @@ impl MappableCommand {
         search_selection_detect_word_boundaries, "Use current selection as the search pattern, automatically wrapping with `\\b` on word boundaries",
         make_search_word_bounded, "Modify current search to make it word bounded",
         global_search, "Global search in workspace folder",
+        buffer_search, "Search in current buffer",
         extend_line, "Select current line, if already selected, extend to another line based on the anchor",
         extend_line_below, "Select current line, if already selected, extend to next line",
         extend_line_above, "Select current line, if already selected, extend to previous line",
@@ -407,7 +409,16 @@ impl MappableCommand {
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         code_action, "Perform code action",
-        buffer_picker, "Open buffer picker",
+        recent_file_picker, "Open recent file picker for current project",
+        all_recent_file_picker, "Open all recent file picker",
+        buffer_picker, "Open project buffer picker",
+        all_buffer_picker, "Open all-buffer picker",
+        project_switcher, "Open project switcher",
+        project_file_picker, "Open file picker in current project",
+        project_file_picker_in_other_project, "Choose project and open file picker",
+        project_search, "Search in current project",
+        project_search_in_other_project, "Choose project and search",
+        project_buffer_picker, "Open project buffer picker",
         jumplist_picker, "Open jumplist picker",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
@@ -2789,6 +2800,66 @@ fn global_search(cx: &mut Context) {
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
+fn buffer_search(cx: &mut Context) {
+    struct BufferResult {
+        id: DocumentId,
+        line: usize,
+        text: String,
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    let doc_id = view.doc;
+    let text = doc.text();
+    let slice = text.slice(..);
+    let items = (0..text.len_lines())
+        .map(|line| {
+            let start = slice.line_to_char(line);
+            let end = line_end_char_index(&slice, line);
+            BufferResult {
+                id: doc_id,
+                line,
+                text: slice.slice(start..end).into(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let columns = [
+        PickerColumn::new("line", |item: &BufferResult, _| {
+            (item.line + 1).to_string().into()
+        }),
+        PickerColumn::new("contents", |item: &BufferResult, _| {
+            item.text.as_str().into()
+        }),
+    ];
+
+    let picker = Picker::new(columns, 1, items, (), |cx, item, action| {
+        cx.editor.switch(item.id, action);
+        let config = cx.editor.config();
+        let (view, doc) = (view_mut!(cx.editor), doc_mut!(cx.editor, &item.id));
+        let text = doc.text();
+        if item.line >= text.len_lines() {
+            cx.editor.set_error(
+                "The line you jumped to does not exist anymore because the buffer has changed.",
+            );
+            return;
+        }
+
+        let text = text.slice(..);
+        let start = text.line_to_char(item.line);
+        let end = line_end_char_index(&text, item.line);
+        doc.set_selection(view.id, Selection::single(start, end));
+        if action.align_view(view, doc.id()) {
+            view.ensure_cursor_in_view_center(doc, config.scrolloff);
+        }
+    })
+    .with_preview(|editor, item| {
+        editor.documents.get(&item.id)?;
+        Some((item.id.into(), Some((item.line, item.line))))
+    });
+
+    cx.push_layer(Box::new(overlaid(picker)));
+}
+
 enum Extend {
     Above,
     Below,
@@ -3168,13 +3239,52 @@ fn append_mode(cx: &mut Context) {
 }
 
 fn file_picker(cx: &mut Context) {
-    let root = find_workspace().0;
+    let root = workspace_file_picker_root(cx.editor);
     if !root.exists() {
         cx.editor.set_error("Workspace directory does not exist");
         return;
     }
     let picker = ui::file_picker(cx.editor, root);
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+fn workspace_file_picker_root(editor: &Editor) -> PathBuf {
+    workspace_file_picker_root_from(editor.active_project_root(), || find_workspace().0)
+}
+
+fn workspace_file_picker_root_from(
+    active_project_root: Option<&Path>,
+    fallback: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    active_project_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_file_picker_root_prefers_active_project_root() {
+        let project_root = Path::new("/tmp/helix-project");
+        let fallback_root = PathBuf::from("/tmp/ghostty-config");
+
+        assert_eq!(
+            workspace_file_picker_root_from(Some(project_root), || fallback_root.clone()),
+            project_root
+        );
+    }
+
+    #[test]
+    fn workspace_file_picker_root_uses_fallback_without_active_project() {
+        let fallback_root = PathBuf::from("/tmp/ghostty-config");
+
+        assert_eq!(
+            workspace_file_picker_root_from(None, || fallback_root.clone()),
+            fallback_root
+        );
+    }
 }
 
 fn file_picker_in_current_buffer_directory(cx: &mut Context) {
@@ -3212,6 +3322,67 @@ fn file_picker_in_current_directory(cx: &mut Context) {
     }
     let picker = ui::file_picker(cx.editor, cwd);
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+fn recent_file_picker(cx: &mut Context) {
+    let Some(project) = cx.editor.active_project() else {
+        cx.editor.set_error("No active project");
+        return;
+    };
+
+    let items = recent_file_items(project.recent_files.iter());
+    if items.is_empty() {
+        cx.editor.set_error("No recent files in active project");
+        return;
+    }
+
+    cx.push_layer(Box::new(overlaid(recent_files_picker(cx.editor, items))));
+}
+
+fn all_recent_file_picker(cx: &mut Context) {
+    let items = recent_file_items(cx.editor.projects.recent_files().iter());
+    if items.is_empty() {
+        cx.editor.set_error("No recent files");
+        return;
+    }
+
+    cx.push_layer(Box::new(overlaid(recent_files_picker(cx.editor, items))));
+}
+
+fn recent_file_items<'a>(recent_files: impl Iterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
+    recent_files
+        .filter(|path| path.is_file())
+        .cloned()
+        .collect()
+}
+
+fn recent_files_picker(editor: &Editor, items: Vec<PathBuf>) -> Picker<PathBuf, PathStyleConfig> {
+    let columns = [PickerColumn::new(
+        "path",
+        |path: &PathBuf, config: &PathStyleConfig| config.stylize(Some(path), None),
+    )];
+
+    Picker::new(
+        columns,
+        0,
+        items,
+        PathStyleConfig::new(&editor.theme),
+        |cx, path, action| {
+            if let Some(project) = cx.editor.projects.project_for_path(path) {
+                if let Err(err) = cx.editor.switch_project(project) {
+                    cx.editor
+                        .set_error(format!("Failed to switch project: {err}"));
+                    return;
+                }
+            }
+
+            if let Err(err) = cx.editor.open(path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open file '{}': {err}", path.display()));
+            }
+        },
+    )
+    .with_preview(|_editor, path| Some((path.as_path().into(), None)))
 }
 
 fn file_explorer(cx: &mut Context) {
@@ -3308,7 +3479,439 @@ impl PathStyleConfig {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ProjectPickerAction {
+    Switch,
+    FilePicker,
+    Search,
+}
+
+#[derive(Clone)]
+enum ProjectPickerItem {
+    Project {
+        id: ProjectId,
+        name: String,
+        root: PathBuf,
+    },
+    RecentFile {
+        id: ProjectId,
+        name: String,
+        path: PathBuf,
+    },
+}
+
+impl ProjectPickerItem {
+    fn project(&self) -> ProjectId {
+        match self {
+            Self::Project { id, .. } | Self::RecentFile { id, .. } => *id,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Project { name, .. } | Self::RecentFile { name, .. } => name,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            Self::Project { root, .. } => root,
+            Self::RecentFile { path, .. } => path,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Project { .. } => "project",
+            Self::RecentFile { .. } => "recent",
+        }
+    }
+}
+
+fn project_items(projects: impl Iterator<Item = Project>) -> Vec<ProjectPickerItem> {
+    let mut items = Vec::new();
+
+    for project in projects {
+        let name = project.display_name().to_string();
+        items.push(ProjectPickerItem::Project {
+            id: project.id,
+            name: name.clone(),
+            root: project.root.clone(),
+        });
+        items.extend(
+            project
+                .recent_files
+                .iter()
+                .filter(|path| path.exists())
+                .take(5)
+                .map(|path| ProjectPickerItem::RecentFile {
+                    id: project.id,
+                    name: name.clone(),
+                    path: path.clone(),
+                }),
+        );
+    }
+
+    items
+}
+
+fn project_picker(cx: &mut Context, picker_action: ProjectPickerAction) {
+    let items = project_items(cx.editor.projects.projects().cloned());
+    if items.is_empty() {
+        cx.editor.set_error("No projects are known yet");
+        return;
+    }
+
+    let columns = [
+        PickerColumn::new("project", |item: &ProjectPickerItem, _| item.name().into()),
+        PickerColumn::new("kind", |item: &ProjectPickerItem, _| item.kind().into()),
+        PickerColumn::new(
+            "path",
+            |item: &ProjectPickerItem, config: &PathStyleConfig| {
+                config.stylize(Some(item.path()), None)
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0,
+        items,
+        PathStyleConfig::new(&cx.editor.theme),
+        move |cx, item: &ProjectPickerItem, action| {
+            let project = item.project();
+            match picker_action {
+                ProjectPickerAction::Switch => {
+                    if let Err(err) = cx.editor.switch_project(project) {
+                        cx.editor
+                            .set_error(format!("Failed to switch project: {err}"));
+                        return;
+                    }
+
+                    if let ProjectPickerItem::RecentFile { path, .. } = item {
+                        if let Err(err) = cx.editor.open(path, action) {
+                            cx.editor.set_error(format!(
+                                "Failed to open file '{}': {err}",
+                                path.display()
+                            ));
+                        }
+                    } else if cx.editor.active_project_document_count() == 0 {
+                        if let Some(root) = cx.editor.active_project_root().map(Path::to_path_buf) {
+                            push_file_picker_callback(cx, root);
+                        }
+                    }
+                }
+                ProjectPickerAction::FilePicker => {
+                    if let Err(err) = cx.editor.switch_project(project) {
+                        cx.editor
+                            .set_error(format!("Failed to switch project: {err}"));
+                        return;
+                    }
+                    let Some(root) = cx.editor.active_project_root().map(Path::to_path_buf) else {
+                        cx.editor.set_error("No active project");
+                        return;
+                    };
+                    push_file_picker_callback(cx, root);
+                }
+                ProjectPickerAction::Search => {
+                    if let Err(err) = cx.editor.switch_project(project) {
+                        cx.editor
+                            .set_error(format!("Failed to switch project: {err}"));
+                        return;
+                    }
+                    let Some(root) = cx.editor.active_project_root().map(Path::to_path_buf) else {
+                        cx.editor.set_error("No active project");
+                        return;
+                    };
+                    push_project_search_prompt_callback(cx, root);
+                }
+            }
+        },
+    )
+    .with_preview(|_editor, item| Some((item.path().into(), None)));
+
+    cx.push_layer(Box::new(overlaid(picker)));
+}
+
+fn project_switcher(cx: &mut Context) {
+    project_picker(cx, ProjectPickerAction::Switch);
+}
+
+fn project_file_picker(cx: &mut Context) {
+    let Some(root) = cx.editor.active_project_root().map(Path::to_path_buf) else {
+        cx.editor.set_error("No active project");
+        return;
+    };
+    cx.push_layer(Box::new(overlaid(ui::file_picker(cx.editor, root))));
+}
+
+fn project_file_picker_in_other_project(cx: &mut Context) {
+    project_picker(cx, ProjectPickerAction::FilePicker);
+}
+
+fn project_search(cx: &mut Context) {
+    let Some(root) = cx.editor.active_project_root().map(Path::to_path_buf) else {
+        cx.editor.set_error("No active project");
+        return;
+    };
+    cx.push_layer(Box::new(project_search_prompt_component(root)));
+}
+
+fn project_search_in_other_project(cx: &mut Context) {
+    project_picker(cx, ProjectPickerAction::Search);
+}
+
+fn project_search_prompt_component(root: PathBuf) -> Prompt {
+    Prompt::new(
+        "project search: ".into(),
+        Some('/'),
+        ui::completers::none,
+        move |cx, input, event| {
+            if event != PromptEvent::Validate || input.is_empty() {
+                return;
+            }
+            let root = root.clone();
+            let pattern = input.to_string();
+            cx.jobs.callback(async move {
+                let call = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+                    let picker = project_search_picker(editor, root, pattern);
+                    compositor.push(Box::new(overlaid(picker)));
+                }));
+                Ok(call)
+            });
+        },
+    )
+}
+
+fn push_file_picker_callback(cx: &mut compositor::Context, root: PathBuf) {
+    cx.jobs.callback(async move {
+        let call = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            compositor.push(Box::new(overlaid(ui::file_picker(editor, root))));
+        }));
+        Ok(call)
+    });
+}
+
+fn push_project_search_prompt_callback(cx: &mut compositor::Context, root: PathBuf) {
+    cx.jobs.callback(async move {
+        let call = Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+            compositor.push(Box::new(project_search_prompt_component(root)));
+        }));
+        Ok(call)
+    });
+}
+
+#[derive(Debug)]
+struct ProjectSearchResult {
+    path: PathBuf,
+    display_path: PathBuf,
+    contents: String,
+    line_start: usize,
+    line_end: usize,
+}
+
+fn project_search_picker(
+    editor: &Editor,
+    search_root: PathBuf,
+    pattern: String,
+) -> Picker<ProjectSearchResult, PathStyleConfig> {
+    let columns = [
+        PickerColumn::new(
+            "path",
+            |item: &ProjectSearchResult, config: &PathStyleConfig| {
+                config.stylize(Some(&item.display_path), Some(item.line_start))
+            },
+        ),
+        PickerColumn::new("contents", |item: &ProjectSearchResult, _| {
+            item.contents.as_str().into()
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1,
+        [],
+        PathStyleConfig::new(&editor.theme),
+        move |cx,
+              ProjectSearchResult {
+                  path,
+                  line_start,
+                  line_end,
+                  ..
+              },
+              action| {
+            if let Err(err) = cx.editor.activate_project_for_path(path) {
+                cx.editor.set_error(format!(
+                    "Failed to activate project for '{}': {err}",
+                    path.display()
+                ));
+                return;
+            }
+
+            let doc = match cx.editor.open(path, action) {
+                Ok(id) => doc_mut!(cx.editor, &id),
+                Err(e) => {
+                    cx.editor
+                        .set_error(format!("Failed to open file '{}': {}", path.display(), e));
+                    return;
+                }
+            };
+
+            let line_start = *line_start;
+            let line_end = *line_end;
+            let view = view_mut!(cx.editor);
+            let text = doc.text();
+            if line_start >= text.len_lines() {
+                cx.editor.set_error(
+                    "The line you jumped to does not exist anymore because the file has changed.",
+                );
+                return;
+            }
+            let start = text.line_to_char(line_start);
+            let end = text.line_to_char((line_end + 1).min(text.len_lines()));
+
+            doc.set_selection(view.id, Selection::single(start, end));
+            if action.align_view(view, doc.id()) {
+                align_view(doc, view, Align::Center);
+            }
+        },
+    )
+    .with_preview(|_editor, item| {
+        Some((
+            item.path.as_path().into(),
+            Some((item.line_start, item.line_end)),
+        ))
+    })
+    .with_history_register(Some('/'));
+
+    let injector = picker.injector();
+    let smart_case = editor.config().search.smart_case;
+    let file_picker_config = editor.config().file_picker.clone();
+    let documents: Vec<_> = editor
+        .documents()
+        .map(|doc| (doc.path().map(ToOwned::to_owned), doc.text().to_owned()))
+        .collect();
+
+    std::thread::spawn(move || {
+        let matcher = match RegexMatcherBuilder::new()
+            .case_smart(smart_case)
+            .multi_line(true)
+            .build(&pattern)
+        {
+            Ok(matcher) => matcher,
+            Err(err) => {
+                log::info!(
+                    "Failed to compile search pattern in project search: {}",
+                    err
+                );
+                return;
+            }
+        };
+
+        let dedup_symlinks = file_picker_config.deduplicate_links;
+        let absolute_root = search_root
+            .canonicalize()
+            .unwrap_or_else(|_| search_root.clone());
+        let searcher = SearcherBuilder::new()
+            .binary_detection(BinaryDetection::quit(b'\x00'))
+            .multi_line(true)
+            .build();
+
+        WalkBuilder::new(&search_root)
+            .hidden(file_picker_config.hidden)
+            .parents(file_picker_config.parents)
+            .ignore(file_picker_config.ignore)
+            .follow_links(file_picker_config.follow_symlinks)
+            .git_ignore(file_picker_config.git_ignore)
+            .git_global(file_picker_config.git_global)
+            .git_exclude(file_picker_config.git_exclude)
+            .max_depth(file_picker_config.max_depth)
+            .filter_entry(move |entry| filter_picker_entry(entry, &absolute_root, dedup_symlinks))
+            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+            .add_custom_ignore_filename(".helix/ignore")
+            .build_parallel()
+            .run(|| {
+                let mut searcher = searcher.clone();
+                let matcher = matcher.clone();
+                let injector = injector.clone();
+                let documents = &documents;
+                let search_root = &search_root;
+                Box::new(move |entry: Result<DirEntry, ignore::Error>| -> WalkState {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(_) => return WalkState::Continue,
+                    };
+
+                    if !entry.path().is_file() {
+                        return WalkState::Continue;
+                    }
+
+                    let mut stop = false;
+                    let sink = sinks::UTF8(|line_start, line_content| {
+                        let line_start = line_start as usize - 1;
+                        let line_end = line_start + line_content.lines().count() - 1;
+                        let display_path = entry
+                            .path()
+                            .strip_prefix(search_root)
+                            .unwrap_or(entry.path())
+                            .to_path_buf();
+                        stop = injector
+                            .push(ProjectSearchResult {
+                                path: entry.path().to_path_buf(),
+                                display_path,
+                                contents: line_content.trim_end().to_string(),
+                                line_start,
+                                line_end,
+                            })
+                            .is_err();
+
+                        Ok(!stop)
+                    });
+                    let doc = documents.iter().find(|&(doc_path, _)| {
+                        doc_path
+                            .as_ref()
+                            .is_some_and(|doc_path| doc_path == entry.path())
+                    });
+
+                    let result = if let Some((_, doc)) = doc {
+                        if searcher.multi_line_with_matcher(&matcher) {
+                            let text = doc.to_string();
+                            searcher.search_slice(&matcher, text.as_bytes(), sink)
+                        } else {
+                            searcher.search_reader(&matcher, RopeReader::new(doc.slice(..)), sink)
+                        }
+                    } else {
+                        searcher.search_path(&matcher, entry.path(), sink)
+                    };
+
+                    if let Err(err) = result {
+                        log::error!("Project search error: {}, {}", entry.path().display(), err);
+                    }
+                    if stop {
+                        WalkState::Quit
+                    } else {
+                        WalkState::Continue
+                    }
+                })
+            });
+    });
+
+    picker
+}
+
+fn project_buffer_picker(cx: &mut Context) {
+    buffer_picker_impl(cx, true);
+}
+
+fn all_buffer_picker(cx: &mut Context) {
+    buffer_picker_impl(cx, false);
+}
+
 fn buffer_picker(cx: &mut Context) {
+    buffer_picker_impl(cx, true);
+}
+
+fn buffer_picker_impl(cx: &mut Context, project_local: bool) {
     let current = view!(cx.editor).doc;
 
     struct BufferMeta<'a> {
@@ -3330,10 +3933,17 @@ fn buffer_picker(cx: &mut Context) {
         focused_at: doc.focused_at,
     };
 
+    let active_project = cx.editor.active_project_id();
     let mut items = cx
         .editor
         .documents
         .values()
+        .filter(|doc| {
+            !project_local
+                || active_project.is_some_and(|project| {
+                    cx.editor.projects.project_for_document(doc.id()) == Some(project)
+                })
+        })
         .map(new_meta)
         .collect::<Vec<BufferMeta>>();
 

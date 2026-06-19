@@ -293,17 +293,31 @@ This layer is a kludge of mappings, mostly pickers.
 
 | Key     | Description                                                             | Command                                    |
 | -----   | -----------                                                             | -------                                    |
-| `f`     | Open file picker at LSP workspace root                                  | `file_picker`                              |
-| `F`     | Open file picker at current working directory                           | `file_picker_in_current_directory`         |
-| `e`     | Open file explorer at workspace root                                     | `file_explorer`                            |
-| `.`     | Open file explorer at current buffer's directory                        | `file_explorer_in_current_buffer_directory`|
-| `b`     | Open buffer picker                                                      | `buffer_picker`                            |
+| `f`     | Enter file mode                                                         | N/A                                        |
+| `ff`    | Open file picker at LSP workspace root                                  | `file_picker`                              |
+| `fF`    | Open file picker at current working directory                           | `file_picker_in_current_directory`         |
+| `f.`    | Open file picker at current buffer's directory                          | `file_picker_in_current_buffer_directory`  |
+| `fe`    | Open file explorer at workspace root                                    | `file_explorer`                            |
+| `fE`    | Open file explorer at current working directory                         | `file_explorer_in_current_directory`       |
+| `fr`    | Open recent file picker for current project                             | `recent_file_picker`                       |
+| `fR`    | Open all recent file picker                                             | `all_recent_file_picker`                   |
+| `b`     | Open project-local buffer picker                                        | `buffer_picker`                            |
 | `j`     | Open jumplist picker                                                    | `jumplist_picker`                          |
 | `g`     | Open changed file picker                                                | `changed_file_picker`                      |
 | `G`     | Debug (experimental)                                                    | N/A                                        |
 | `k`     | Show documentation for item under cursor in a [popup](#popup) (**LSP**) | `hover`                                    |
-| `s`     | Open document symbol picker (**LSP** or **TS**)                         | `lsp_or_syntax_symbol_picker`              |
-| `S`     | Open workspace symbol picker (**LSP** or **TS**)                        | `lsp_or_syntax_workspace_symbol_picker`    |
+| `p`     | Enter project mode. This replaces the previous clipboard paste-after binding. | N/A                                  |
+| `pp`    | Switch project                                                          | `project_switcher`                         |
+| `pf`    | Open file picker in current project                                     | `project_file_picker`                      |
+| `pF`    | Choose project and open file picker                                     | `project_file_picker_in_other_project`     |
+| `ps`    | Search in current project                                               | `project_search`                           |
+| `pS`    | Choose project and search                                               | `project_search_in_other_project`          |
+| `pb`    | Open project-local buffer picker                                        | `project_buffer_picker`                    |
+| `pB`    | Open all-buffer picker                                                  | `all_buffer_picker`                        |
+| `s`     | Enter search mode                                                       | N/A                                        |
+| `sb`    | Search in current buffer                                                | `buffer_search`                            |
+| `ss`    | Open document symbol picker (**LSP** or **TS**)                         | `lsp_or_syntax_symbol_picker`              |
+| `sS`, `S` | Open workspace symbol picker (**LSP** or **TS**)                      | `lsp_or_syntax_workspace_symbol_picker`    |
 | `d`     | Open document diagnostics picker (**LSP**)                              | `diagnostics_picker`                       |
 | `D`     | Open workspace diagnostics picker (**LSP**)                             | `workspace_diagnostics_picker`             |
 | `r`     | Rename symbol (**LSP**)                                                 | `rename_symbol`                            |

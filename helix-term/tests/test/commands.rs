@@ -1,6 +1,9 @@
 use helix_term::application::Application;
 
 use super::*;
+use helix_core::comment::{
+    format_comment_box, CommentBoxAlignment, CommentBoxStyle, DEFAULT_COMMENT_BOX_WIDTH,
+};
 
 mod insert;
 mod movement;
@@ -922,6 +925,129 @@ async fn global_search_with_multibyte_chars() -> anyhow::Result<()> {
             // #[|
             ]#
             "},
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn buffer_search_jumps_to_filtered_line() -> anyhow::Result<()> {
+    test((
+        indoc! {"\
+            alpha
+            #[b|]#eta
+            unique needle
+            gamma
+            "},
+        " sbneedle<ret>",
+        indoc! {"\
+            alpha
+            beta
+            #[unique needle|]#
+            gamma
+            "},
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comment_box_formats_selected_title() -> anyhow::Result<()> {
+    let expected = format_comment_box(
+        "//",
+        CommentBoxStyle::Box,
+        CommentBoxAlignment::Left,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Parser".to_string()],
+    );
+
+    test((
+        "#[Parser|]#",
+        ":comment-box box<ret>",
+        format!("#[{expected}|]#"),
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comment_box_updates_existing_block() -> anyhow::Result<()> {
+    let input = format_comment_box(
+        "//",
+        CommentBoxStyle::Box,
+        CommentBoxAlignment::Left,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Parser".to_string(), "Token recovery".to_string()],
+    );
+    let expected = format_comment_box(
+        "//",
+        CommentBoxStyle::Ruler,
+        CommentBoxAlignment::Center,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Parser".to_string(), "Token recovery".to_string()],
+    );
+
+    test((
+        format!("#[{input}|]#"),
+        ":comment-box ruler<ret>",
+        format!("#[{expected}|]#"),
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comment_box_converts_subheading_to_box_without_filler() -> anyhow::Result<()> {
+    let input = format_comment_box(
+        "//",
+        CommentBoxStyle::Subheading,
+        CommentBoxAlignment::Left,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Pool Methods".to_string()],
+    );
+    let expected = format_comment_box(
+        "//",
+        CommentBoxStyle::Box,
+        CommentBoxAlignment::Left,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Pool Methods".to_string()],
+    );
+
+    test((
+        format!("#[{input}|]#"),
+        ":comment-box box<ret>",
+        format!("#[{expected}|]#"),
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comment_box_preserves_selected_blank_line_after_existing_block() -> anyhow::Result<()> {
+    let input = format_comment_box(
+        "//",
+        CommentBoxStyle::Heading,
+        CommentBoxAlignment::Left,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Entity management".to_string()],
+    );
+    let expected = format_comment_box(
+        "//",
+        CommentBoxStyle::Subheading,
+        CommentBoxAlignment::Left,
+        DEFAULT_COMMENT_BOX_WIDTH,
+        &["Entity management".to_string()],
+    );
+
+    test((
+        format!("#[{input}\n\n|]#fn Entity Registry.create_entity(&self) {{\n}}"),
+        ":comment-box subheading<ret>",
+        format!("#[{expected}\n\n|]#fn Entity Registry.create_entity(&self) {{\n}}"),
     ))
     .await?;
 

@@ -399,6 +399,30 @@ mod tests {
     }
 
     #[test]
+    fn file_mode_default_keymap_contains_recent_files() {
+        let keymaps = default();
+        let root = keymaps.get(&Mode::Normal).unwrap();
+
+        assert!(root
+            .search(&[key!(' '), key!('f')])
+            .unwrap()
+            .node()
+            .is_some());
+        assert_eq!(
+            root.search(&[key!(' '), key!('f'), key!('f')]).unwrap(),
+            &KeyTrie::MappableCommand(MappableCommand::file_picker)
+        );
+        assert_eq!(
+            root.search(&[key!(' '), key!('f'), key!('r')]).unwrap(),
+            &KeyTrie::MappableCommand(MappableCommand::recent_file_picker)
+        );
+        assert_eq!(
+            root.search(&[key!(' '), key!('f'), key!('R')]).unwrap(),
+            &KeyTrie::MappableCommand(MappableCommand::all_recent_file_picker)
+        );
+    }
+
+    #[test]
     fn merge_partial_keys() {
         let keymap = hashmap! {
             Mode::Normal => keymap!({ "Normal mode"
@@ -494,7 +518,7 @@ mod tests {
         let node = keymap.search(&[key!(' '), key!('s')]).unwrap();
         assert_eq!(
             node.node().unwrap().keys().copied().collect::<Vec<_>>(),
-            vec![key!('v'), key!('c')]
+            vec![key!('s'), key!('S'), key!('b'), key!('v'), key!('c')]
         );
     }
 
@@ -502,6 +526,16 @@ mod tests {
     fn aliased_modes_are_same_in_default_keymap() {
         let keymaps = Keymaps::default().map();
         let root = keymaps.get(&Mode::Normal).unwrap();
+        assert!(
+            root.search(&[key!(' '), key!('s'), key!('b')]).is_some(),
+            "Space-s-b should open current-buffer search"
+        );
+        assert!(root.search(&[key!(' '), key!('p'), key!('p')]).is_some());
+        assert!(root.search(&[key!(' '), key!('p'), key!('f')]).is_some());
+        assert!(root.search(&[key!(' '), key!('p'), key!('F')]).is_some());
+        assert!(root.search(&[key!(' '), key!('p'), key!('s')]).is_some());
+        assert!(root.search(&[key!(' '), key!('p'), key!('S')]).is_some());
+        assert!(root.search(&[key!(' '), key!('p'), key!('b')]).is_some());
         assert_eq!(
             root.search(&[key!(' '), key!('w')]).unwrap(),
             root.search(&["C-w".parse::<KeyEvent>().unwrap()]).unwrap(),

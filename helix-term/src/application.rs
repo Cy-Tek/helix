@@ -145,6 +145,10 @@ impl Application {
 
             // If the first file is a directory, skip it and open a picker
             if let Some((first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
+                let project = editor.ensure_project_for_path(&first);
+                if let Err(err) = editor.switch_project(project) {
+                    editor.set_error(format!("Failed to switch project: {err}"));
+                }
                 let picker = ui::file_picker(&editor, first);
                 compositor.push(Box::new(overlaid(picker)));
             }

@@ -9,8 +9,320 @@ use crate::{
 };
 use helix_stdx::rope::RopeSliceExt;
 use std::borrow::Cow;
+use std::str::FromStr;
 
 pub const DEFAULT_COMMENT_TOKEN: &str = "#";
+pub const DEFAULT_COMMENT_BOX_WIDTH: usize = 80;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentBoxAlignment {
+    Left,
+    Center,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentBoxStyle {
+    Plain,
+    Subheading,
+    Heading,
+    Ruler,
+    Slash,
+    Star,
+    Hash,
+    Box,
+    Sidebar,
+    Fold,
+    DocHeading,
+}
+
+impl FromStr for CommentBoxStyle {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "plain" | "label" => Ok(Self::Plain),
+            "subheading" | "sub" | "minor" | "dash" | "dashed" => Ok(Self::Subheading),
+            "heading" | "major" | "equals" => Ok(Self::Heading),
+            "ruler" | "centered" | "centered-ruler" => Ok(Self::Ruler),
+            "slash" | "slashes" | "banner" => Ok(Self::Slash),
+            "star" | "stars" => Ok(Self::Star),
+            "hash" | "markdown" | "md" => Ok(Self::Hash),
+            "box" | "boxed" => Ok(Self::Box),
+            "sidebar" | "side-bar" | "bar" => Ok(Self::Sidebar),
+            "fold" | "region" => Ok(Self::Fold),
+            "doc-heading" | "doc" | "docheading" => Ok(Self::DocHeading),
+            _ => Err("unknown comment box style"),
+        }
+    }
+}
+
+fn comment_prefix(token: &str) -> String {
+    format!("{token} ")
+}
+
+fn line_width(width: usize, prefix: &str) -> usize {
+    width.saturating_sub(prefix.chars().count())
+}
+
+fn repeat_to_width(ch: char, width: usize) -> String {
+    std::iter::repeat_n(ch, width).collect()
+}
+
+fn align_text(text: &str, width: usize, alignment: CommentBoxAlignment) -> String {
+    let text_width = text.chars().count();
+    if text_width >= width {
+        return text.to_string();
+    }
+
+    let padding = width - text_width;
+    match alignment {
+        CommentBoxAlignment::Left => format!("{text}{}", " ".repeat(padding)),
+        CommentBoxAlignment::Center => {
+            let left = padding / 2;
+            let right = padding - left;
+            format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
+        }
+    }
+}
+
+fn fill_around(text: &str, width: usize, fill: char, alignment: CommentBoxAlignment) -> String {
+    let label = format!(" {text} ");
+    let label_width = label.chars().count();
+    if label_width >= width {
+        return label;
+    }
+
+    let fill_width = width - label_width;
+    let (left, right) = match alignment {
+        CommentBoxAlignment::Left => (4.min(fill_width), fill_width.saturating_sub(4)),
+        CommentBoxAlignment::Center => (fill_width / 2, fill_width - (fill_width / 2)),
+    };
+
+    format!(
+        "{}{}{}",
+        repeat_to_width(fill, left),
+        label,
+        repeat_to_width(fill, right)
+    )
+}
+
+fn prefixed_line(prefix: &str, content: String, width: usize) -> String {
+    let target = line_width(width, prefix);
+    if content.chars().count() >= target {
+        return format!("{prefix}{content}");
+    }
+    format!(
+        "{prefix}{content}{}",
+        " ".repeat(target - content.chars().count())
+    )
+}
+
+fn doc_comment_prefix(token: &str) -> String {
+    if token == "//" {
+        "/// ".to_string()
+    } else {
+        comment_prefix(token)
+    }
+}
+
+pub fn format_comment_box(
+    token: &str,
+    style: CommentBoxStyle,
+    alignment: CommentBoxAlignment,
+    width: usize,
+    text_lines: &[String],
+) -> String {
+    let title = text_lines
+        .first()
+        .map(String::as_str)
+        .unwrap_or_default()
+        .trim();
+    let subtitle_lines = text_lines.iter().skip(1).map(|line| line.trim());
+    let prefix = comment_prefix(token);
+    let content_width = line_width(width, &prefix);
+
+    match style {
+        CommentBoxStyle::Plain => {
+            let mut lines = Vec::new();
+            lines.push(prefixed_line(
+                &prefix,
+                align_text(title, content_width, alignment),
+                width,
+            ));
+            lines.extend(subtitle_lines.map(|line| {
+                prefixed_line(&prefix, align_text(line, content_width, alignment), width)
+            }));
+            lines.join("\n")
+        }
+        CommentBoxStyle::Subheading => prefixed_line(
+            &prefix,
+            fill_around(title, content_width, '-', alignment),
+            width,
+        ),
+        CommentBoxStyle::Heading => {
+            let rule = prefixed_line(&prefix, repeat_to_width('=', content_width), width);
+            let title = prefixed_line(&prefix, align_text(title, content_width, alignment), width);
+            format!("{rule}\n{title}\n{rule}")
+        }
+        CommentBoxStyle::Ruler => prefixed_line(
+            &prefix,
+            fill_around(title, content_width, '-', alignment),
+            width,
+        ),
+        CommentBoxStyle::Slash => {
+            let rule = format!("{}{}", token, repeat_to_width('/', width.saturating_sub(2)));
+            let title = prefixed_line(&prefix, align_text(title, content_width, alignment), width);
+            format!("{rule}\n{title}\n{rule}")
+        }
+        CommentBoxStyle::Star => {
+            let rule = prefixed_line(&prefix, repeat_to_width('*', content_width), width);
+            let title = prefixed_line(&prefix, align_text(title, content_width, alignment), width);
+            format!("{rule}\n{title}\n{rule}")
+        }
+        CommentBoxStyle::Hash => prefixed_line(&prefix, format!("### {title}"), width),
+        CommentBoxStyle::Box => {
+            let border_width = content_width.saturating_sub(2);
+            let inner_width = content_width.saturating_sub(4);
+            let border = prefixed_line(
+                &prefix,
+                format!("+{}+", repeat_to_width('-', border_width)),
+                width,
+            );
+            let mut lines = Vec::new();
+            lines.push(border.clone());
+            lines.push(prefixed_line(
+                &prefix,
+                format!("| {} |", fill_around(title, inner_width, '-', alignment)),
+                width,
+            ));
+            lines.extend(subtitle_lines.map(|line| {
+                prefixed_line(
+                    &prefix,
+                    format!("| {} |", align_text(line, inner_width, alignment)),
+                    width,
+                )
+            }));
+            lines.push(border);
+            lines.join("\n")
+        }
+        CommentBoxStyle::Sidebar => {
+            let mut lines = Vec::new();
+            lines.push(prefixed_line(&prefix, format!("| {title}"), width));
+            lines.extend(
+                subtitle_lines.map(|line| prefixed_line(&prefix, format!("| {line}"), width)),
+            );
+            lines.join("\n")
+        }
+        CommentBoxStyle::Fold => {
+            let end = if title.is_empty() {
+                "endregion".to_string()
+            } else {
+                format!("endregion {title}")
+            };
+            format!(
+                "{}\n{}",
+                prefixed_line(&prefix, format!("region {title}"), width),
+                prefixed_line(&prefix, end, width)
+            )
+        }
+        CommentBoxStyle::DocHeading => {
+            let prefix = doc_comment_prefix(token);
+            let content_width = line_width(width, &prefix);
+            prefixed_line(
+                &prefix,
+                format!("# {title}"),
+                content_width + prefix.chars().count(),
+            )
+        }
+    }
+}
+
+fn is_decoration_line(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    let without_box_edges = trimmed
+        .strip_prefix('+')
+        .and_then(|text| text.strip_suffix('+'))
+        .unwrap_or(trimmed);
+
+    without_box_edges
+        .chars()
+        .all(|ch| matches!(ch, '-' | '=' | '*' | '/' | '~' | '#'))
+}
+
+fn strip_comment_token<'a>(token: &str, line: &'a str) -> Option<&'a str> {
+    let line = line.trim_start();
+    let line = if token == "//" {
+        line.strip_prefix("///")
+            .or_else(|| line.strip_prefix(token))?
+    } else {
+        line.strip_prefix(token)?
+    };
+    Some(line.strip_prefix(' ').unwrap_or(line))
+}
+
+fn strip_box_edges(line: &str) -> &str {
+    let line = line.trim();
+    let line = line.strip_prefix('|').unwrap_or(line).trim();
+    line.strip_suffix('|').unwrap_or(line).trim()
+}
+
+fn strip_filled_label(line: &str) -> &str {
+    let line = line.trim();
+    let Some(fill) = line.chars().next() else {
+        return line;
+    };
+    if !matches!(fill, '-' | '=' | '*' | '/' | '~') {
+        return line;
+    }
+
+    let left_width = line
+        .chars()
+        .take_while(|&ch| ch == fill)
+        .map(char::len_utf8)
+        .sum::<usize>();
+    let after_left = &line[left_width..];
+    if !after_left.starts_with(char::is_whitespace) {
+        return line;
+    }
+
+    let title = after_left.trim_start();
+    let end_without_fill = title.trim_end_matches(fill);
+    if end_without_fill == title {
+        return line;
+    }
+
+    end_without_fill.trim_end()
+}
+
+pub fn comment_box_text_lines(token: &str, text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = strip_comment_token(token, line)?;
+            let line = line.trim();
+            if is_decoration_line(line) {
+                return None;
+            }
+
+            let line = strip_filled_label(strip_box_edges(line));
+            let line = line
+                .strip_prefix("region ")
+                .or_else(|| line.strip_prefix("### "))
+                .or_else(|| line.strip_prefix("# "))
+                .unwrap_or(line)
+                .trim();
+
+            if line.starts_with("endregion") || line.is_empty() {
+                None
+            } else {
+                Some(line.to_string())
+            }
+        })
+        .collect()
+}
 
 /// Returns the longest matching comment token of the given line (if it exists).
 pub fn get_comment_token<'a, S: AsRef<str>>(
@@ -328,6 +640,99 @@ pub fn split_lines_of_selection(text: RopeSlice, selection: &Selection) -> Selec
 #[cfg(test)]
 mod test {
     use super::*;
+
+    mod comment_box {
+        use super::*;
+
+        #[test]
+        fn box_style_formats_to_eighty_columns() {
+            let formatted = format_comment_box(
+                "//",
+                CommentBoxStyle::Box,
+                CommentBoxAlignment::Left,
+                DEFAULT_COMMENT_BOX_WIDTH,
+                &["Parser".to_string()],
+            );
+            let lines = formatted.lines().collect::<Vec<_>>();
+
+            assert_eq!(lines.len(), 3);
+            assert!(lines.iter().all(|line| line.chars().count() == 80));
+            assert_eq!(lines[0], format!("// +{}+", "-".repeat(75)));
+            assert_eq!(lines[1], format!("// | ---- Parser {} |", "-".repeat(61)));
+            assert_eq!(lines[2], format!("// +{}+", "-".repeat(75)));
+        }
+
+        #[test]
+        fn centered_ruler_formats_to_eighty_columns() {
+            let formatted = format_comment_box(
+                "//",
+                CommentBoxStyle::Ruler,
+                CommentBoxAlignment::Center,
+                DEFAULT_COMMENT_BOX_WIDTH,
+                &["Parser".to_string()],
+            );
+
+            assert_eq!(formatted.chars().count(), 80);
+            assert!(formatted.starts_with("// ---"));
+            assert!(formatted.ends_with("---"));
+            assert!(formatted.contains(" Parser "));
+        }
+
+        #[test]
+        fn parses_builtin_styles() {
+            assert_eq!("box".parse(), Ok(CommentBoxStyle::Box));
+            assert_eq!("subheading".parse(), Ok(CommentBoxStyle::Subheading));
+            assert_eq!("doc-heading".parse(), Ok(CommentBoxStyle::DocHeading));
+            assert!("unknown".parse::<CommentBoxStyle>().is_err());
+        }
+
+        #[test]
+        fn extracts_title_from_existing_box() {
+            let formatted = format_comment_box(
+                "//",
+                CommentBoxStyle::Box,
+                CommentBoxAlignment::Left,
+                DEFAULT_COMMENT_BOX_WIDTH,
+                &["Parser".to_string(), "Token recovery".to_string()],
+            );
+
+            assert_eq!(
+                comment_box_text_lines("//", &formatted),
+                vec!["Parser".to_string(), "Token recovery".to_string()]
+            );
+        }
+
+        #[test]
+        fn extracts_clean_title_from_all_builtin_styles() {
+            for style in [
+                CommentBoxStyle::Plain,
+                CommentBoxStyle::Subheading,
+                CommentBoxStyle::Heading,
+                CommentBoxStyle::Ruler,
+                CommentBoxStyle::Slash,
+                CommentBoxStyle::Star,
+                CommentBoxStyle::Hash,
+                CommentBoxStyle::Box,
+                CommentBoxStyle::Sidebar,
+                CommentBoxStyle::Fold,
+                CommentBoxStyle::DocHeading,
+            ] {
+                let formatted = format_comment_box(
+                    "//",
+                    style,
+                    CommentBoxAlignment::Left,
+                    DEFAULT_COMMENT_BOX_WIDTH,
+                    &["Pool Methods".to_string()],
+                );
+
+                assert_eq!(
+                    comment_box_text_lines("//", &formatted),
+                    vec!["Pool Methods".to_string()],
+                    "{style:?} should extract a clean title from {formatted:?}"
+                );
+            }
+        }
+    }
 
     mod find_line_comment {
         use super::*;
