@@ -28,7 +28,9 @@ use tree_house::{
     Error, InjectionLanguageMarker, LanguageConfig as SyntaxConfig, Layer,
 };
 
-use crate::{indent::IndentQuery, tree_sitter, ChangeSet, Language};
+use crate::{
+    indent::IndentQuery, tree_sitter, ChangeSet, FoldKind, FoldRange, FoldSource, Language,
+};
 
 pub use tree_house::{
     highlighter::{Highlight, HighlightEvent},
@@ -42,6 +44,7 @@ pub struct LanguageData {
     syntax: OnceCell<Option<SyntaxConfig>>,
     indent_query: OnceCell<Option<IndentQuery>>,
     textobject_query: OnceCell<Option<TextObjectQuery>>,
+    fold_query: OnceCell<Option<FoldQuery>>,
     tag_query: OnceCell<Option<TagQuery>>,
     rainbow_query: OnceCell<Option<RainbowQuery>>,
 }
@@ -53,6 +56,7 @@ impl LanguageData {
             syntax: OnceCell::new(),
             indent_query: OnceCell::new(),
             textobject_query: OnceCell::new(),
+            fold_query: OnceCell::new(),
             tag_query: OnceCell::new(),
             rainbow_query: OnceCell::new(),
         }
@@ -154,6 +158,39 @@ impl LanguageData {
             .get_or_init(|| {
                 let grammar = self.syntax_config(loader)?.grammar;
                 Self::compile_textobject_query(grammar, &self.config)
+                    .map_err(|err| {
+                        log::error!("{err}");
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .as_ref()
+    }
+
+    /// Compiles the folds.scm query for a language.
+    /// This function should only be used by this module or the xtask crate.
+    pub fn compile_fold_query(
+        grammar: Grammar,
+        config: &LanguageConfiguration,
+    ) -> Result<Option<FoldQuery>> {
+        let name = &config.language_id;
+        let mut text = read_query(name, "folds.scm");
+        if text.is_empty() {
+            text = read_query(name, "fold.scm");
+        }
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let fold_query = FoldQuery::new(grammar, &text)
+            .with_context(|| format!("Failed to compile folds.scm query for '{name}'"))?;
+        Ok(Some(fold_query))
+    }
+
+    fn fold_query(&self, loader: &Loader) -> Option<&FoldQuery> {
+        self.fold_query
+            .get_or_init(|| {
+                let grammar = self.syntax_config(loader)?.grammar;
+                Self::compile_fold_query(grammar, &self.config)
                     .map_err(|err| {
                         log::error!("{err}");
                     })
@@ -414,6 +451,10 @@ impl Loader {
 
     pub fn textobject_query(&self, lang: Language) -> Option<&TextObjectQuery> {
         self.language(lang).textobject_query(self)
+    }
+
+    pub fn fold_query(&self, lang: Language) -> Option<&FoldQuery> {
+        self.language(lang).fold_query(self)
     }
 
     pub fn tag_query(&self, lang: Language) -> Option<&TagQuery> {
@@ -698,6 +739,61 @@ impl Syntax {
         }
 
         OverlayHighlights::Heterogenous { highlights }
+    }
+
+    pub fn fold_ranges(&self, source: RopeSlice, loader: &Loader) -> Vec<FoldRange> {
+        let mut ranges = Vec::new();
+        let mut query_iter = self.query_iter::<_, (), _>(
+            source,
+            |lang| loader.fold_query(lang).map(|q| &q.query),
+            0..u32::MAX,
+        );
+
+        while let Some(event) = query_iter.next() {
+            let QueryIterEvent::Match(mat) = event else {
+                continue;
+            };
+
+            let fold_query = loader
+                .fold_query(query_iter.current_language())
+                .expect("language must have a fold query to emit matches");
+            let Some(kind) = fold_query.kind_for_capture(mat.capture, mat.node.kind()) else {
+                continue;
+            };
+            let byte_range = mat.node.byte_range();
+            let Some(end_byte) = byte_range.end.checked_sub(1) else {
+                continue;
+            };
+            let start_line = source.byte_to_line(byte_range.start as usize);
+            let end_line = source.byte_to_line(end_byte as usize);
+            if start_line >= end_line || start_line + 1 >= source.len_lines() {
+                continue;
+            }
+
+            let start_char = source.line_to_char(start_line + 1).saturating_sub(1);
+            let end_char = if end_line + 1 < source.len_lines() {
+                source.line_to_char(end_line + 1)
+            } else {
+                source.len_chars()
+            };
+            let hidden_lines = end_line.saturating_sub(start_line);
+            let range = FoldRange::new(
+                start_line,
+                end_line,
+                start_char,
+                end_char,
+                format!(" ⋯ {hidden_lines} lines"),
+            )
+            .with_kind(kind)
+            .with_source(FoldSource::TreeSitter);
+            if range.is_valid() {
+                ranges.push(range);
+            }
+        }
+
+        ranges.sort_unstable_by_key(|range| (range.start_char, range.end_char));
+        ranges.dedup_by_key(|range| (range.start_char, range.end_char, range.kind));
+        ranges
     }
 }
 
@@ -1074,6 +1170,62 @@ pub struct TagQuery {
     pub query: Query,
 }
 
+#[derive(Debug)]
+pub struct FoldQuery {
+    query: Query,
+    captures: Vec<(Capture, FoldKind)>,
+}
+
+impl FoldQuery {
+    fn new(grammar: Grammar, source: &str) -> Result<Self, tree_sitter::query::ParseError> {
+        let query = Query::new(grammar, source, |_pattern, predicate| match predicate {
+            UserPredicate::Other(pred) if pred.name() == "trim!" => Ok(()),
+            _ => Err(InvalidPredicateError::unknown(predicate)),
+        })?;
+
+        let captures = [
+            ("fold.comment", FoldKind::Comment),
+            ("fold.imports", FoldKind::Imports),
+            ("fold.region", FoldKind::Region),
+            ("fold.function", FoldKind::Function),
+            ("fold.method", FoldKind::Method),
+            ("fold.class", FoldKind::Class),
+            ("fold.type", FoldKind::Type),
+            ("fold", FoldKind::Block),
+        ]
+        .into_iter()
+        .filter_map(|(name, kind)| query.get_capture(name).map(|capture| (capture, kind)))
+        .collect();
+
+        Ok(Self { query, captures })
+    }
+
+    fn kind_for_capture(&self, capture: Capture, node_kind: &str) -> Option<FoldKind> {
+        let kind = self
+            .captures
+            .iter()
+            .find_map(|(candidate, kind)| (*candidate == capture).then_some(*kind))?;
+        if kind != FoldKind::Block {
+            return Some(kind);
+        }
+
+        Some(match node_kind {
+            kind if kind.contains("comment") => FoldKind::Comment,
+            kind if kind.contains("method") => FoldKind::Method,
+            kind if kind.contains("function") => FoldKind::Function,
+            kind if kind.contains("class") => FoldKind::Class,
+            kind if kind.contains("struct")
+                || kind.contains("enum")
+                || kind.contains("interface")
+                || kind.contains("type") =>
+            {
+                FoldKind::Type
+            }
+            _ => FoldKind::Block,
+        })
+    }
+}
+
 pub fn pretty_print_tree<W: fmt::Write>(fmt: &mut W, node: Node) -> fmt::Result {
     if node.child_count() == 0 {
         if node_is_visible(&node) {
@@ -1201,7 +1353,7 @@ mod test {
     use once_cell::sync::Lazy;
 
     use super::*;
-    use crate::{Rope, Transaction};
+    use crate::{FoldKind, FoldSource, Rope, Transaction};
 
     static LOADER: Lazy<Loader> = Lazy::new(crate::config::default_lang_loader);
 
@@ -1250,6 +1402,21 @@ mod test {
         // The query used in this test case only captures the first line_comment node.
         // Determine if this behavior is intentional in tree-sitter.
         // test("multiple_nodes_grouped", 1..37);
+    }
+
+    #[test]
+    fn lua_fold_query_collects_multiline_function() {
+        let source = Rope::from_str("function foo()\n  print(1)\nend\n");
+        let language = LOADER.language_for_name("lua").unwrap();
+        let syntax = Syntax::new(source.slice(..), language, &LOADER).unwrap();
+
+        let folds = syntax.fold_ranges(source.slice(..), &LOADER);
+
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_line, 0);
+        assert_eq!(folds[0].end_line, 2);
+        assert_eq!(folds[0].kind, FoldKind::Function);
+        assert_eq!(folds[0].source, FoldSource::TreeSitter);
     }
 
     #[test]

@@ -1,15 +1,362 @@
+use helix_core::{FoldKind, FoldRange, Selection};
 use helix_term::application::Application;
+use helix_view::{current, current_ref, doc};
+use std::io::Write;
 
 use super::*;
 use helix_core::comment::{
     format_comment_box, CommentBoxAlignment, CommentBoxStyle, DEFAULT_COMMENT_BOX_WIDTH,
 };
 
+fn folded_comment_app() -> anyhow::Result<Application> {
+    AppBuilder::new()
+        .with_input_text("above\n#[|]#/// one\n/// two\n/// three\nfn foo() {}\n")
+        .build()
+}
+
+fn install_comment_fold(app: &mut Application, cursor_line: usize) {
+    let (view, doc) = current!(app.editor);
+    let text = doc.text().slice(..);
+    let fold_start = text.line_to_char(2).saturating_sub(1);
+    let fold_end = text.line_to_char(4);
+    let fold =
+        FoldRange::new(1, 3, fold_start, fold_end, " ⋯ 3 lines").with_kind(FoldKind::Comment);
+    let cursor = text.line_to_char(cursor_line);
+    doc.set_folds(vec![fold]);
+    doc.set_selection(view.id, Selection::point(cursor));
+}
+
+fn cursor_line(app: &Application) -> usize {
+    let (view, doc) = current_ref!(app.editor);
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    text.char_to_line(cursor)
+}
+
 mod insert;
 mod movement;
 mod reverse_selection_contents;
 mod rotate_selection_contents;
 mod write;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fold_close_and_open_all_from_keymap() -> anyhow::Result<()> {
+    let mut file = tempfile::Builder::new().suffix(".lua").tempfile()?;
+    write!(
+        file,
+        "function foo()\n  print(1)\nend\n\nfunction bar()\n  print(2)\nend\n"
+    )?;
+
+    let mut app = AppBuilder::new().with_file(file.path(), None).build()?;
+    let assert_closed = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 2);
+    };
+    let assert_open = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert!(doc.folds().is_empty());
+    };
+
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("zM"), Some(&assert_closed as &dyn Fn(&Application))),
+            (Some("zR"), Some(&assert_open as &dyn Fn(&Application))),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vertical_movement_treats_folded_region_as_one_line() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new()
+        .with_input_text("above\n/// one\n/// two\n/// three\n#[|]#fn foo() {}\n")
+        .build()?;
+    {
+        let (view, doc) = current!(app.editor);
+        let (fold_start, fold_end, function_start) = {
+            let text = doc.text().slice(..);
+            (
+                text.line_to_char(2).saturating_sub(1),
+                text.line_to_char(4),
+                text.line_to_char(4),
+            )
+        };
+        let fold =
+            FoldRange::new(1, 3, fold_start, fold_end, " ⋯ 3 lines").with_kind(FoldKind::Comment);
+        doc.set_folds(vec![fold]);
+        doc.set_selection(view.id, Selection::point(function_start));
+    }
+
+    let assert_on_fold_line = |app: &Application| {
+        let (view, doc) = current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view.id).primary().cursor(text);
+        assert_eq!(text.char_to_line(cursor), 1);
+    };
+    let assert_above_fold = |app: &Application| {
+        let (view, doc) = current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view.id).primary().cursor(text);
+        assert_eq!(text.char_to_line(cursor), 0);
+    };
+    let assert_on_function_line = |app: &Application| {
+        let (view, doc) = current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view.id).primary().cursor(text);
+        assert_eq!(text.char_to_line(cursor), 4);
+    };
+
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("k"),
+                Some(&assert_on_fold_line as &dyn Fn(&Application)),
+            ),
+            (Some("k"), Some(&assert_above_fold as &dyn Fn(&Application))),
+            (
+                Some("j"),
+                Some(&assert_on_fold_line as &dyn Fn(&Application)),
+            ),
+            (
+                Some("j"),
+                Some(&assert_on_function_line as &dyn Fn(&Application)),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vertical_movement_treats_merged_folds_as_one_region() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    {
+        let (view, doc) = current!(app.editor);
+        let (first_start, first_end, second_end, function_start) = {
+            let text = doc.text().slice(..);
+            (
+                text.line_to_char(2).saturating_sub(1),
+                text.line_to_char(3),
+                text.line_to_char(4),
+                text.line_to_char(4),
+            )
+        };
+        let first =
+            FoldRange::new(1, 2, first_start, first_end, " ⋯ 1 lines").with_kind(FoldKind::Comment);
+        let second =
+            FoldRange::new(3, 4, first_end, second_end, " ⋯ 1 lines").with_kind(FoldKind::Comment);
+        doc.set_folds(vec![first, second]);
+        doc.set_selection(view.id, Selection::point(function_start));
+        assert_eq!(doc.folds().len(), 1);
+    }
+
+    let assert_on_fold_line = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 1);
+        assert_eq!(cursor_line(app), 1);
+    };
+    let assert_above_fold = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 1);
+        assert_eq!(cursor_line(app), 0);
+    };
+
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("k"),
+                Some(&assert_on_fold_line as &dyn Fn(&Application)),
+            ),
+            (Some("k"), Some(&assert_above_fold as &dyn Fn(&Application))),
+        ],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vertical_movement_does_not_enter_fold_at_end_of_file() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new()
+        .with_input_text("above\n#[|]#/// one\n/// two\n/// three\n")
+        .build()?;
+    {
+        let (view, doc) = current!(app.editor);
+        let (fold_start, fold_end, cursor) = {
+            let text = doc.text().slice(..);
+            (
+                text.line_to_char(2).saturating_sub(1),
+                text.len_chars(),
+                text.line_to_char(1),
+            )
+        };
+        let fold =
+            FoldRange::new(1, 4, fold_start, fold_end, " ⋯ 3 lines").with_kind(FoldKind::Comment);
+        doc.set_folds(vec![fold]);
+        doc.set_selection(view.id, Selection::point(cursor));
+    }
+
+    let assert_on_fold_line = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 1);
+        assert_eq!(cursor_line(app), 1);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("j"),
+        Some(&assert_on_fold_line as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn horizontal_movement_opens_folded_region_with_l() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    install_comment_fold(&mut app, 1);
+
+    let assert_opened = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert!(doc.folds().is_empty());
+        assert_eq!(cursor_line(app), 1);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("l"),
+        Some(&assert_opened as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn horizontal_movement_opens_folded_region_with_h() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    install_comment_fold(&mut app, 1);
+
+    let assert_opened = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert!(doc.folds().is_empty());
+        assert_eq!(cursor_line(app), 1);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("h"),
+        Some(&assert_opened as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_mode_opens_fold_and_places_cursor_at_fold_start() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    install_comment_fold(&mut app, 1);
+
+    let assert_insert_inside_fold = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert!(doc.folds().is_empty());
+        assert_eq!(app.editor.mode(), helix_view::document::Mode::Insert);
+        assert_eq!(cursor_line(app), 2);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("i"),
+        Some(&assert_insert_inside_fold as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_mode_does_not_open_folded_region() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    install_comment_fold(&mut app, 1);
+
+    let assert_still_folded = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 1);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("a"),
+        Some(&assert_still_folded as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_below_inserts_after_folded_region_without_opening() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    install_comment_fold(&mut app, 1);
+
+    let assert_line_after_fold = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 1);
+        assert_eq!(doc.folds()[0].start_line, 1);
+        assert_eq!(doc.folds()[0].end_line, 3);
+        assert_eq!(cursor_line(app), 4);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("o"),
+        Some(&assert_line_after_fold as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_above_inserts_before_folded_region_without_opening() -> anyhow::Result<()> {
+    let mut app = folded_comment_app()?;
+    install_comment_fold(&mut app, 1);
+
+    let assert_line_before_fold = |app: &Application| {
+        let doc = doc!(app.editor);
+        assert_eq!(doc.folds().len(), 1);
+        assert_eq!(doc.folds()[0].start_line, 2);
+        assert_eq!(doc.folds()[0].end_line, 4);
+        assert_eq!(cursor_line(app), 1);
+    };
+
+    test_key_sequence(
+        &mut app,
+        Some("O"),
+        Some(&assert_line_before_fold as &dyn Fn(&Application)),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn search_selection_detect_word_boundaries_at_eof() -> anyhow::Result<()> {

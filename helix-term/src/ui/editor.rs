@@ -20,7 +20,7 @@ use helix_core::{
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
     unicode::width::UnicodeWidthStr,
-    visual_offset_from_block, Change, Position, Range, Selection, Transaction,
+    visual_offset_from_block, Change, FoldRange, Position, Range, Selection, Transaction,
 };
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
@@ -276,17 +276,30 @@ impl EditorView {
             .for_each(|area| surface.set_style(area, ruler_theme))
     }
 
-    fn viewport_byte_range(
+    fn viewport_byte_range_with_folds(
         text: helix_core::RopeSlice,
         row: usize,
         height: u16,
+        folds: &[FoldRange],
     ) -> std::ops::Range<usize> {
         // Calculate viewport byte ranges:
         // Saturating subs to make it inclusive zero indexing.
         let last_line = text.len_lines().saturating_sub(1);
-        let last_visible_line = (row + height as usize).saturating_sub(1).min(last_line);
-        let start = text.line_to_byte(row.min(last_line));
-        let end = text.line_to_byte(last_visible_line + 1);
+        let row = row.min(last_line);
+        let start = text.line_to_byte(row);
+
+        let mut visible_lines = 0;
+        let mut line = row;
+        while visible_lines < height as usize && line <= last_line {
+            visible_lines += 1;
+            if let Some(fold) = folds.iter().find(|fold| fold.start_line == line) {
+                line = fold.end_line.saturating_add(1);
+            } else {
+                line += 1;
+            }
+        }
+
+        let end = text.line_to_byte(line.min(text.len_lines()));
 
         start..end
     }
@@ -303,7 +316,7 @@ impl EditorView {
         let syntax = doc.syntax()?;
         let text = doc.text().slice(..);
         let row = text.char_to_line(anchor.min(text.len_chars()));
-        let range = Self::viewport_byte_range(text, row, height);
+        let range = Self::viewport_byte_range_with_folds(text, row, height, doc.folds());
         let range = range.start as u32..range.end as u32;
 
         let highlighter = syntax.highlighter(text, loader, range);
@@ -319,7 +332,7 @@ impl EditorView {
         let text = doc.text().slice(..);
         let row = text.char_to_line(anchor.min(text.len_chars()));
 
-        let mut range = Self::viewport_byte_range(text, row, height);
+        let mut range = Self::viewport_byte_range_with_folds(text, row, height, doc.folds());
         range = text.byte_to_char(range.start)..text.byte_to_char(range.end);
 
         text_annotations.collect_overlay_highlights(range)
@@ -335,7 +348,7 @@ impl EditorView {
         let syntax = doc.syntax()?;
         let text = doc.text().slice(..);
         let row = text.char_to_line(anchor.min(text.len_chars()));
-        let visible_range = Self::viewport_byte_range(text, row, height);
+        let visible_range = Self::viewport_byte_range_with_folds(text, row, height, doc.folds());
         let start = syntax::child_for_byte_range(
             &syntax.tree().root_node(),
             visible_range.start as u32..visible_range.end as u32,
@@ -1741,6 +1754,37 @@ impl Component for EditorView {
             }
             cursor => cursor,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorView;
+    use helix_core::{FoldRange, Rope};
+
+    #[test]
+    fn viewport_byte_range_extends_past_folded_lines() {
+        let text = Rope::from("zero\none\ntwo\nthree\nfour\nfive\nsix\n");
+        let fold = FoldRange::new(
+            1,
+            3,
+            text.line_to_char(1),
+            text.line_to_char(4),
+            " ⋯ 3 lines",
+        );
+
+        let range = EditorView::viewport_byte_range_with_folds(text.slice(..), 0, 4, &[fold]);
+
+        assert_eq!(range, text.line_to_byte(0)..text.line_to_byte(6));
+    }
+
+    #[test]
+    fn viewport_byte_range_is_unchanged_without_folds() {
+        let text = Rope::from("zero\none\ntwo\nthree\nfour\nfive\nsix\n");
+
+        let range = EditorView::viewport_byte_range_with_folds(text.slice(..), 0, 4, &[]);
+
+        assert_eq!(range, text.line_to_byte(0)..text.line_to_byte(4));
     }
 }
 

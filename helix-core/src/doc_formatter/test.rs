@@ -1,4 +1,5 @@
 use crate::doc_formatter::{DocumentFormatter, TextFormat};
+use crate::fold::{normalize_folds, FoldRange};
 use crate::text_annotations::{InlineAnnotation, Overlay, TextAnnotations};
 
 impl TextFormat {
@@ -209,5 +210,44 @@ fn annotation_and_overlay() {
         )
         .collect_to_str(),
         "fooo  bar "
+    );
+}
+
+#[test]
+fn folded_lines_are_hidden_after_the_start_line() {
+    let folds = [FoldRange::new(0, 2, 11, 42, " ⋯ 2 lines")];
+    let mut text_format = TextFormat::new_test(false);
+    text_format.viewport_width = 80;
+    assert_eq!(
+        DocumentFormatter::new_at_prev_checkpoint(
+            "fn main() {\n    let x = 1;\n    let y = 2;\n}\n".into(),
+            &text_format,
+            TextAnnotations::default().add_fold_ranges(&folds),
+            0,
+        )
+        .collect_to_str(),
+        "fn main() { ⋯ 2 lines \n} \n "
+    );
+}
+
+#[test]
+fn normalized_adjacent_folds_render_as_one_region() {
+    let mut folds = vec![
+        FoldRange::new(0, 2, 11, 42, " ⋯ 2 lines"),
+        FoldRange::new(2, 4, 42, 59, " ⋯ 2 lines"),
+    ];
+    normalize_folds(&mut folds);
+
+    let mut text_format = TextFormat::new_test(false);
+    text_format.viewport_width = 80;
+    assert_eq!(
+        DocumentFormatter::new_at_prev_checkpoint(
+            "fn main() {\n    let x = 1;\n    let y = 2;\n    let z = 3;\n}\n".into(),
+            &text_format,
+            TextAnnotations::default().add_fold_ranges(&folds),
+            0,
+        )
+        .collect_to_str(),
+        "fn main() { ⋯ 4 lines \n "
     );
 }

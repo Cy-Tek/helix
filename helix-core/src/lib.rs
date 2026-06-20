@@ -11,6 +11,7 @@ pub mod diagnostic;
 pub mod diff;
 pub mod doc_formatter;
 pub mod editor_config;
+pub mod fold;
 pub mod fuzzy;
 pub mod graphemes;
 pub mod history;
@@ -68,6 +69,7 @@ pub use syntax::Syntax;
 
 pub use completion::CompletionItem;
 pub use diagnostic::Diagnostic;
+pub use fold::{normalize_folds, FoldKind, FoldRange, FoldSource};
 
 pub use line_ending::{LineEnding, NATIVE_LINE_ENDING};
 pub use transaction::{Assoc, Change, ChangeSet, Deletion, Operation, Transaction};

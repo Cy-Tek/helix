@@ -331,6 +331,8 @@ pub struct Config {
     pub word_completion: WordCompletion,
     /// Automatic formatting on save. Defaults to true.
     pub auto_format: bool,
+    /// Folding behavior.
+    pub folding: FoldingConfig,
     /// Default register used for yank/paste. Defaults to '"'
     pub default_yank_register: char,
     /// Automatic save on focus lost and/or after delay.
@@ -435,6 +437,33 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FoldingConfig {
+    pub enable: bool,
+    pub auto_fold_comments: bool,
+    pub source: FoldingSource,
+}
+
+impl Default for FoldingConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            auto_fold_comments: false,
+            source: FoldingSource::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+pub enum FoldingSource {
+    #[default]
+    Auto,
+    TreeSitter,
+    Lsp,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -1112,6 +1141,7 @@ impl Default for Config {
             path_completion: true,
             word_completion: WordCompletion::default(),
             auto_format: true,
+            folding: FoldingConfig::default(),
             default_yank_register: '"',
             auto_save: AutoSave::default(),
             idle_timeout: Duration::from_millis(250),

@@ -12,6 +12,7 @@ use helix_core::encoding::Encoding;
 use helix_core::snippets::{ActiveSnippet, SnippetRenderCtx};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::text_annotations::{InlineAnnotation, Overlay};
+use helix_core::{normalize_folds, FoldKind, FoldSource};
 use helix_event::TaskController;
 use helix_lsp::util::lsp_pos_to_pos;
 use helix_stdx::faccess::{copy_metadata, readonly};
@@ -40,7 +41,8 @@ use helix_core::{
     indent::{auto_detect_indent_style, IndentStyle},
     line_ending::auto_detect_line_ending,
     syntax::{self, config::LanguageConfiguration},
-    ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
+    ChangeSet, Diagnostic, FoldRange, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax,
+    Transaction,
 };
 
 use crate::{
@@ -174,6 +176,7 @@ pub struct Document {
     pub syntax: Option<Syntax>,
     /// Corresponding language scope name. Usually `source.<lang>`.
     pub language: Option<Arc<LanguageConfiguration>>,
+    folds: Vec<FoldRange>,
 
     /// Pending changes since last history commit.
     changes: ChangeSet,
@@ -739,6 +742,7 @@ impl Document {
             restore_cursor: false,
             syntax: None,
             language: None,
+            folds: Vec::new(),
             changes,
             old_state,
             diagnostics: Vec::new(),
@@ -1348,6 +1352,7 @@ impl Document {
         loader: &syntax::Loader,
     ) {
         self.language = language_config;
+        self.folds.clear();
         self.syntax = self.language.as_ref().and_then(|config| {
             Syntax::new(self.text.slice(..), config.language(), loader)
                 .map_err(|err| {
@@ -1360,6 +1365,70 @@ impl Document {
                 })
                 .ok()
         });
+        if self.config.load().folding.auto_fold_comments {
+            if let Some(syntax) = &self.syntax {
+                let folds = syntax
+                    .fold_ranges(self.text.slice(..), loader)
+                    .into_iter()
+                    .filter(|fold| fold.kind == FoldKind::Comment)
+                    .collect();
+                self.set_folds(folds);
+            }
+        }
+    }
+
+    pub fn folds(&self) -> &[FoldRange] {
+        &self.folds
+    }
+
+    pub fn set_folds(&mut self, mut folds: Vec<FoldRange>) {
+        normalize_folds(&mut folds);
+        self.folds = folds;
+    }
+
+    pub fn clear_folds(&mut self) {
+        self.folds.clear();
+    }
+
+    pub fn set_lsp_folds(
+        &mut self,
+        ranges: Vec<lsp::FoldingRange>,
+        offset_encoding: helix_lsp::OffsetEncoding,
+    ) {
+        let text = self.text.slice(..);
+        let folds = ranges
+            .into_iter()
+            .filter_map(|range| {
+                let start_line = range.start_line as usize;
+                let end_line = range.end_line as usize;
+                if start_line >= end_line || start_line + 1 >= text.len_lines() {
+                    return None;
+                }
+
+                let start_char = text.line_to_char(start_line + 1).saturating_sub(1);
+                let end_position = lsp::Position {
+                    line: end_line.saturating_add(1) as u32,
+                    character: 0,
+                };
+                let end_char = lsp_pos_to_pos(&self.text, end_position, offset_encoding)
+                    .unwrap_or_else(|| self.text.len_chars());
+                let hidden_lines = end_line.saturating_sub(start_line);
+                let placeholder = range
+                    .collapsed_text
+                    .unwrap_or_else(|| format!(" ⋯ {hidden_lines} lines"));
+                let kind = match range.kind {
+                    Some(lsp::FoldingRangeKind::Comment) => FoldKind::Comment,
+                    Some(lsp::FoldingRangeKind::Imports) => FoldKind::Imports,
+                    Some(lsp::FoldingRangeKind::Region) => FoldKind::Region,
+                    None => FoldKind::Block,
+                };
+                let fold = FoldRange::new(start_line, end_line, start_char, end_char, placeholder)
+                    .with_kind(kind)
+                    .with_source(FoldSource::Lsp);
+                fold.is_valid().then_some(fold)
+            })
+            .collect();
+        self.set_folds(folds);
     }
 
     /// Set the programming language for the file if you know the language but don't have the
@@ -1506,6 +1575,7 @@ impl Document {
                 self.syntax = None;
             }
         }
+        self.folds.clear();
 
         // TODO: all of that should likely just be hooks
         // start computing the diff in parallel

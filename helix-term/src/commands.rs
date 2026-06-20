@@ -41,12 +41,12 @@ use helix_core::{
     text_annotations::{Overlay, TextAnnotations},
     textobject,
     unicode::width::UnicodeWidthChar,
-    visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope, RopeReader, RopeSlice,
-    Selection, SmallVec, Syntax, Tendril, Transaction,
+    visual_offset_from_block, Assoc, Deletion, FoldKind, FoldRange, LineEnding, Position, Range,
+    Rope, RopeReader, RopeSlice, Selection, SmallVec, Syntax, Tendril, Transaction,
 };
 use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
-    editor::{Action, Motion},
+    editor::{Action, FoldingSource, Motion},
     expansion,
     info::Info,
     input::KeyEvent,
@@ -385,6 +385,19 @@ impl MappableCommand {
         make_search_word_bounded, "Modify current search to make it word bounded",
         global_search, "Global search in workspace folder",
         buffer_search, "Search in current buffer",
+        fold_toggle, "Toggle fold under cursor",
+        fold_open, "Open fold under cursor",
+        fold_close, "Close fold under cursor",
+        fold_open_all, "Open all folds in current buffer",
+        fold_close_all, "Close all folds in current buffer",
+        fold_open_comments, "Open all comment folds in current buffer",
+        fold_close_comments, "Close all comments in current buffer",
+        fold_open_functions, "Open all function folds in current buffer",
+        fold_close_functions, "Close all functions in current buffer",
+        fold_open_methods, "Open all method folds in current buffer",
+        fold_close_methods, "Close all methods in current buffer",
+        fold_open_types, "Open all type folds in current buffer",
+        fold_close_types, "Close all types in current buffer",
         extend_line, "Select current line, if already selected, extend to another line based on the anchor",
         extend_line_below, "Select current line, if already selected, extend to next line",
         extend_line_above, "Select current line, if already selected, extend to previous line",
@@ -758,13 +771,198 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
     doc.set_selection(view.id, selection);
 }
 
+fn move_folded_visual_line(
+    text: RopeSlice,
+    range: Range,
+    dir: Direction,
+    count: usize,
+    behaviour: Movement,
+    text_fmt: &TextFormat,
+    annotations: &mut TextAnnotations,
+    folds: &[FoldRange],
+) -> Range {
+    let last_line = text.len_lines().saturating_sub(1);
+    let mut range = range;
+
+    for _ in 0..count {
+        let before = range;
+        let before_line = text.char_to_line(before.cursor(text));
+        range = move_vertically_visual(text, range, dir, 1, behaviour, text_fmt, annotations);
+        let after_line = text.char_to_line(range.cursor(text));
+
+        if before_line == after_line {
+            let boundary_fold = match dir {
+                Direction::Backward => folds
+                    .iter()
+                    .find(|fold| fold.start_line < before_line && before_line <= fold.end_line + 1),
+                Direction::Forward => folds.iter().find(|fold| fold.start_line == before_line),
+            };
+
+            let Some(fold) = boundary_fold else {
+                break;
+            };
+
+            if dir == Direction::Forward && fold.end_line >= last_line {
+                break;
+            }
+
+            let target_line = match dir {
+                Direction::Backward => fold.start_line,
+                Direction::Forward => fold.end_line + 1,
+            };
+            let line_start = text.line_to_char(before_line);
+            let visual_col = before.old_visual_position.map_or(
+                before.cursor(text).saturating_sub(line_start) as u32,
+                |(_, col)| col,
+            );
+            let target_start = text.line_to_char(target_line);
+            let target_end = line_end_char_index(&text, target_line);
+            let target =
+                target_start + (visual_col as usize).min(target_end.saturating_sub(target_start));
+            range = before.put_cursor(text, target, behaviour == Movement::Extend);
+            range.old_visual_position = Some((0, visual_col));
+            continue;
+        }
+
+        let Some(fold) = folds.iter().find(|fold| fold.contains_line(after_line)) else {
+            continue;
+        };
+
+        if dir == Direction::Forward
+            && before_line < fold.start_line
+            && after_line == fold.start_line
+        {
+            continue;
+        }
+
+        let target_line = match dir {
+            Direction::Backward => fold.start_line,
+            Direction::Forward => {
+                if fold.end_line >= last_line {
+                    range = before;
+                    break;
+                }
+                fold.end_line + 1
+            }
+        };
+
+        let line_start = text.line_to_char(before_line);
+        let visual_col = before.old_visual_position.map_or(
+            before.cursor(text).saturating_sub(line_start) as u32,
+            |(_, col)| col,
+        );
+        let target_start = text.line_to_char(target_line);
+        let target_end = line_end_char_index(&text, target_line);
+        let target =
+            target_start + (visual_col as usize).min(target_end.saturating_sub(target_start));
+        range = before.put_cursor(text, target, behaviour == Movement::Extend);
+        range.old_visual_position = Some((0, visual_col));
+    }
+
+    range
+}
+
+fn closed_folds_under_cursors(
+    text: RopeSlice,
+    selection: &Selection,
+    folds: &[FoldRange],
+) -> Vec<FoldRange> {
+    if folds.is_empty() {
+        return Vec::new();
+    }
+
+    let cursor_lines = selection
+        .ranges()
+        .iter()
+        .map(|range| text.char_to_line(range.cursor(text)))
+        .collect::<HashSet<_>>();
+
+    folds
+        .iter()
+        .filter(|fold| cursor_lines.contains(&fold.start_line))
+        .cloned()
+        .collect()
+}
+
+fn open_closed_folds_on_cursor_lines(cx: &mut Context) -> bool {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let folds_to_open = closed_folds_under_cursors(text, doc.selection(view.id), doc.folds());
+
+    if folds_to_open.is_empty() {
+        return false;
+    }
+
+    let lines_to_open = folds_to_open
+        .iter()
+        .map(|fold| fold.start_line)
+        .collect::<HashSet<_>>();
+    let mut folds = doc.folds().to_vec();
+    let before = folds.len();
+    folds.retain(|fold| !lines_to_open.contains(&fold.start_line));
+    doc.set_folds(folds);
+    doc.folds().len() != before
+}
+
+fn move_visual_impl(cx: &mut Context, dir: Direction, behaviour: Movement) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+
+    if doc.folds().is_empty() {
+        let text = doc.text().slice(..);
+        let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+        let mut annotations = view.text_annotations(doc, None);
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            move_vertically_visual(
+                text,
+                range,
+                dir,
+                count,
+                behaviour,
+                &text_fmt,
+                &mut annotations,
+            )
+        });
+        drop(annotations);
+        doc.set_selection(view.id, selection);
+        return;
+    }
+
+    let text = doc.text().slice(..);
+    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+    let mut annotations = view.text_annotations(doc, None);
+    let folds = doc.folds().to_vec();
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        move_folded_visual_line(
+            text,
+            range,
+            dir,
+            count,
+            behaviour,
+            &text_fmt,
+            &mut annotations,
+            &folds,
+        )
+    });
+    drop(annotations);
+    doc.set_selection(view.id, selection);
+}
+
 use helix_core::movement::{move_horizontally, move_vertically};
 
 fn move_char_left(cx: &mut Context) {
+    if cx.editor.mode == Mode::Normal && open_closed_folds_on_cursor_lines(cx) {
+        return;
+    }
+
     move_impl(cx, move_horizontally, Direction::Backward, Movement::Move)
 }
 
 fn move_char_right(cx: &mut Context) {
+    if cx.editor.mode == Mode::Normal && open_closed_folds_on_cursor_lines(cx) {
+        return;
+    }
+
     move_impl(cx, move_horizontally, Direction::Forward, Movement::Move)
 }
 
@@ -777,21 +975,11 @@ fn move_line_down(cx: &mut Context) {
 }
 
 fn move_visual_line_up(cx: &mut Context) {
-    move_impl(
-        cx,
-        move_vertically_visual,
-        Direction::Backward,
-        Movement::Move,
-    )
+    move_visual_impl(cx, Direction::Backward, Movement::Move)
 }
 
 fn move_visual_line_down(cx: &mut Context) {
-    move_impl(
-        cx,
-        move_vertically_visual,
-        Direction::Forward,
-        Movement::Move,
-    )
+    move_visual_impl(cx, Direction::Forward, Movement::Move)
 }
 
 fn extend_char_left(cx: &mut Context) {
@@ -811,21 +999,11 @@ fn extend_line_down(cx: &mut Context) {
 }
 
 fn extend_visual_line_up(cx: &mut Context) {
-    move_impl(
-        cx,
-        move_vertically_visual,
-        Direction::Backward,
-        Movement::Extend,
-    )
+    move_visual_impl(cx, Direction::Backward, Movement::Extend)
 }
 
 fn extend_visual_line_down(cx: &mut Context) {
-    move_impl(
-        cx,
-        move_vertically_visual,
-        Direction::Forward,
-        Movement::Extend,
-    )
+    move_visual_impl(cx, Direction::Forward, Movement::Extend)
 }
 
 fn goto_line_end_impl(view: &mut View, doc: &mut Document, movement: Movement) {
@@ -2860,6 +3038,191 @@ fn buffer_search(cx: &mut Context) {
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
+fn current_fold_candidates(
+    cx: &mut Context,
+) -> Option<(DocumentId, ViewId, Vec<usize>, Vec<FoldRange>)> {
+    if !cx.editor.config().folding.enable {
+        cx.editor.set_status("Folding is disabled");
+        return None;
+    }
+    let folding_source = cx.editor.config().folding.source;
+    if folding_source == FoldingSource::Lsp {
+        cx.editor
+            .set_status("LSP folding ranges are not available for synchronous fold commands yet");
+        return None;
+    }
+
+    let loader = cx.editor.syn_loader.load();
+    let (view, doc) = current_ref!(cx.editor);
+    let Some(syntax) = doc.syntax() else {
+        cx.editor
+            .set_error("Syntax tree is not available in current buffer");
+        return None;
+    };
+
+    let text = doc.text().slice(..);
+    let lines = doc
+        .selection(view.id)
+        .ranges()
+        .iter()
+        .map(|range| text.char_to_line(range.cursor(text)))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let folds = syntax.fold_ranges(text, &loader);
+    Some((doc.id(), view.id, lines, folds))
+}
+
+fn smallest_fold_for_line(folds: &[FoldRange], line: usize) -> Option<FoldRange> {
+    folds
+        .iter()
+        .filter(|fold| fold.contains_line(line) || fold.start_line == line)
+        .min_by_key(|fold| (fold.end_line - fold.start_line, fold.start_char))
+        .cloned()
+}
+
+fn close_folds_for_lines(cx: &mut Context, lines: &[usize], candidates: &[FoldRange]) -> usize {
+    let doc = doc_mut!(cx.editor);
+    let mut folds = doc.folds().to_vec();
+    let before = folds.len();
+    for line in lines {
+        if let Some(fold) = smallest_fold_for_line(candidates, *line) {
+            folds.push(fold);
+        }
+    }
+    doc.set_folds(folds);
+    doc.folds().len().saturating_sub(before)
+}
+
+fn fold_close(cx: &mut Context) {
+    let Some((_doc_id, _view_id, lines, candidates)) = current_fold_candidates(cx) else {
+        return;
+    };
+    if candidates.is_empty() {
+        cx.editor.set_status("No folds available for this buffer");
+        return;
+    }
+    if close_folds_for_lines(cx, &lines, &candidates) == 0 {
+        cx.editor.set_status("No fold under cursor");
+    }
+}
+
+fn fold_open(cx: &mut Context) {
+    let Some((_doc_id, _view_id, lines, _candidates)) = current_fold_candidates(cx) else {
+        return;
+    };
+    let doc = doc_mut!(cx.editor);
+    let before = doc.folds().len();
+    let mut folds = doc.folds().to_vec();
+    folds.retain(|fold| !lines.iter().any(|line| fold.contains_line(*line)));
+    doc.set_folds(folds);
+    if doc.folds().len() == before {
+        cx.editor.set_status("No closed fold under cursor");
+    }
+}
+
+fn fold_toggle(cx: &mut Context) {
+    let Some((_doc_id, _view_id, lines, candidates)) = current_fold_candidates(cx) else {
+        return;
+    };
+    let has_closed_fold = {
+        let doc = doc!(cx.editor);
+        doc.folds()
+            .iter()
+            .any(|fold| lines.iter().any(|line| fold.contains_line(*line)))
+    };
+
+    if has_closed_fold {
+        fold_open(cx);
+    } else if candidates.is_empty() || close_folds_for_lines(cx, &lines, &candidates) == 0 {
+        cx.editor.set_status("No fold under cursor");
+    }
+}
+
+fn fold_open_all(cx: &mut Context) {
+    doc_mut!(cx.editor).clear_folds();
+}
+
+fn fold_close_all(cx: &mut Context) {
+    let Some((_doc_id, _view_id, _lines, candidates)) = current_fold_candidates(cx) else {
+        return;
+    };
+    if candidates.is_empty() {
+        cx.editor.set_status("No folds available for this buffer");
+        return;
+    }
+    doc_mut!(cx.editor).set_folds(candidates);
+}
+
+fn fold_close_kind(cx: &mut Context, kind: FoldKind) {
+    let Some((_doc_id, _view_id, _lines, candidates)) = current_fold_candidates(cx) else {
+        return;
+    };
+    let matches = candidates
+        .into_iter()
+        .filter(|fold| fold.kind == kind)
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        cx.editor.set_status(format!(
+            "No {} folds available for this buffer",
+            kind.as_str()
+        ));
+        return;
+    }
+
+    let doc = doc_mut!(cx.editor);
+    let mut folds = doc.folds().to_vec();
+    folds.extend(matches);
+    doc.set_folds(folds);
+}
+
+fn fold_open_kind(cx: &mut Context, kind: FoldKind) {
+    let doc = doc_mut!(cx.editor);
+    let before = doc.folds().len();
+    let mut folds = doc.folds().to_vec();
+    folds.retain(|fold| fold.kind != kind);
+    doc.set_folds(folds);
+    if doc.folds().len() == before {
+        cx.editor.set_status(format!(
+            "No closed {} folds in current buffer",
+            kind.as_str()
+        ));
+    }
+}
+
+fn fold_close_comments(cx: &mut Context) {
+    fold_close_kind(cx, FoldKind::Comment);
+}
+
+fn fold_open_comments(cx: &mut Context) {
+    fold_open_kind(cx, FoldKind::Comment);
+}
+
+fn fold_close_functions(cx: &mut Context) {
+    fold_close_kind(cx, FoldKind::Function);
+}
+
+fn fold_open_functions(cx: &mut Context) {
+    fold_open_kind(cx, FoldKind::Function);
+}
+
+fn fold_close_methods(cx: &mut Context) {
+    fold_close_kind(cx, FoldKind::Method);
+}
+
+fn fold_open_methods(cx: &mut Context) {
+    fold_open_kind(cx, FoldKind::Method);
+}
+
+fn fold_close_types(cx: &mut Context) {
+    fold_close_kind(cx, FoldKind::Type);
+}
+
+fn fold_open_types(cx: &mut Context) {
+    fold_open_kind(cx, FoldKind::Type);
+}
+
 enum Extend {
     Above,
     Below,
@@ -3198,10 +3561,30 @@ fn insert_mode(cx: &mut Context) {
         doc.text().to_string()
     );
 
-    let selection = doc
-        .selection(view.id)
-        .clone()
-        .transform(|range| Range::new(range.to(), range.from()));
+    let text = doc.text().slice(..);
+    let folds_to_open = closed_folds_under_cursors(text, doc.selection(view.id), doc.folds());
+    let fold_targets = folds_to_open
+        .iter()
+        .map(|fold| {
+            let target_line = fold.start_line.saturating_add(1).min(text.len_lines() - 1);
+            (fold.start_line, text.line_to_char(target_line))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let cursor_line = text.char_to_line(range.cursor(text));
+        fold_targets.get(&cursor_line).map_or_else(
+            || Range::new(range.to(), range.from()),
+            |target| Range::point(*target),
+        )
+    });
+
+    if !fold_targets.is_empty() {
+        let lines_to_open = fold_targets.keys().copied().collect::<HashSet<_>>();
+        let mut folds = doc.folds().to_vec();
+        folds.retain(|fold| !lines_to_open.contains(&fold.start_line));
+        doc.set_folds(folds);
+    }
 
     doc.set_selection(view.id, selection);
 }
@@ -4437,16 +4820,28 @@ fn open(cx: &mut Context, open: Open, comment_continuation: CommentContinuation)
     let text = doc.text().slice(..);
     let contents = doc.text();
     let selection = doc.selection(view.id);
+    let folds_to_preserve = closed_folds_under_cursors(text, selection, doc.folds());
+    let fold_by_start_line = folds_to_preserve
+        .iter()
+        .map(|fold| (fold.start_line, fold.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut preserved_folds = doc.folds().to_vec();
     let mut offs = 0;
 
     let mut ranges = SmallVec::with_capacity(selection.len());
 
     let mut transaction = Transaction::change_by_selection(contents, selection, |range| {
-        // the line number, where the cursor is currently
-        let curr_line_num = text.char_to_line(match open {
+        let cursor_line = text.char_to_line(match open {
             Open::Below => graphemes::prev_grapheme_boundary(text, range.to()),
             Open::Above => range.from(),
         });
+        // the line number, where the cursor is currently
+        let curr_line_num = fold_by_start_line
+            .get(&cursor_line)
+            .map_or(cursor_line, |fold| match open {
+                Open::Below => fold.end_line,
+                Open::Above => fold.start_line,
+            });
 
         // the next line number, where the cursor will be, after finishing the transaction
         let next_new_line_num = match open {
@@ -4546,7 +4941,32 @@ fn open(cx: &mut Context, open: Open, comment_continuation: CommentContinuation)
 
     transaction = transaction.with_selection(Selection::new(ranges, selection.primary_index()));
 
+    if !fold_by_start_line.is_empty() {
+        let changes = transaction.changes();
+        for fold in &mut preserved_folds {
+            fold.start_char = changes.map_pos(fold.start_char, Assoc::After);
+            fold.end_char = changes.map_pos(fold.end_char, Assoc::Before);
+        }
+    }
+
     doc.apply(&transaction, view.id);
+
+    if !fold_by_start_line.is_empty() {
+        let text = doc.text().slice(..);
+        let len_chars = text.len_chars();
+        for fold in &mut preserved_folds {
+            fold.start_line = text.char_to_line(fold.start_char.min(len_chars));
+            fold.end_line = text.char_to_line(fold.end_char.saturating_sub(1).min(len_chars));
+            if open == Open::Below {
+                if let Some(original_fold) = fold_by_start_line.get(&fold.start_line) {
+                    fold.end_line = original_fold.end_line;
+                    fold.end_char =
+                        text.line_to_char((fold.end_line + 1).min(text.len_lines() - 1));
+                }
+            }
+        }
+        doc.set_folds(preserved_folds);
+    }
 }
 
 // o inserts a new line after each line with a selection

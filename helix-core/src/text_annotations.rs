@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 
 use crate::doc_formatter::FormattedGrapheme;
 use crate::syntax::{Highlight, OverlayHighlights};
-use crate::{Position, Tendril};
+use crate::{FoldRange, Position, Tendril};
 
 /// An inline annotation is continuous text shown
 /// on the screen before the grapheme that starts at
@@ -190,7 +190,7 @@ impl<A, M: Clone> Clone for Layer<'_, A, M> {
     }
 }
 
-impl<A, M> Layer<'_, A, M> {
+impl<'a, A, M> Layer<'a, A, M> {
     pub fn reset_pos(&self, char_idx: usize, get_char_idx: impl Fn(&A) -> usize) {
         let new_index = self
             .annotations
@@ -198,7 +198,7 @@ impl<A, M> Layer<'_, A, M> {
         self.current_index.set(new_index);
     }
 
-    pub fn consume(&self, char_idx: usize, get_char_idx: impl Fn(&A) -> usize) -> Option<&A> {
+    pub fn consume(&self, char_idx: usize, get_char_idx: impl Fn(&A) -> usize) -> Option<&'a A> {
         let annot = self.annotations.get(self.current_index.get())?;
         debug_assert!(get_char_idx(annot) >= char_idx);
         if get_char_idx(annot) == char_idx {
@@ -278,6 +278,7 @@ impl<T: ?Sized> Drop for RawBox<T> {
 pub struct TextAnnotations<'a> {
     inline_annotations: Vec<Layer<'a, InlineAnnotation, Option<Highlight>>>,
     overlays: Vec<Layer<'a, Overlay, Option<Highlight>>>,
+    fold_ranges: Vec<Layer<'a, FoldRange, ()>>,
     line_annotations: Vec<(Cell<usize>, RawBox<dyn LineAnnotation + 'a>)>,
 }
 
@@ -286,6 +287,7 @@ impl Debug for TextAnnotations<'_> {
         f.debug_struct("TextAnnotations")
             .field("inline_annotations", &self.inline_annotations)
             .field("overlays", &self.overlays)
+            .field("fold_ranges", &self.fold_ranges)
             .finish_non_exhaustive()
     }
 }
@@ -295,6 +297,7 @@ impl<'a> TextAnnotations<'a> {
     pub fn reset_pos(&self, char_idx: usize) {
         reset_pos(&self.inline_annotations, char_idx, |annot| annot.char_idx);
         reset_pos(&self.overlays, char_idx, |annot| annot.char_idx);
+        reset_pos(&self.fold_ranges, char_idx, |range| range.start_char);
         for (next_anchor, layer) in &self.line_annotations {
             next_anchor.set(unsafe { layer.get().reset_pos(char_idx) });
         }
@@ -354,6 +357,27 @@ impl<'a> TextAnnotations<'a> {
         self
     }
 
+    /// Add collapsed fold ranges.
+    ///
+    /// Ranges must be sorted by `start_char`. The visible start line is
+    /// followed by the range placeholder, then the folded interior is skipped.
+    pub fn add_fold_ranges(&mut self, layer: &'a [FoldRange]) -> &mut Self {
+        if !layer.is_empty() {
+            self.fold_ranges.push((layer, ()).into());
+        }
+        self
+    }
+
+    pub fn next_fold_start_at(&self, char_idx: usize) -> Option<&'a FoldRange> {
+        self.fold_ranges
+            .iter()
+            .filter_map(|layer| {
+                let range = layer.consume(char_idx, |range| range.start_char)?;
+                range.is_valid().then_some(range)
+            })
+            .min_by_key(|range| range.end_char)
+    }
+
     /// Add new annotation lines.
     ///
     /// The line annotations **must be sorted** by their `char_idx`.
@@ -401,6 +425,14 @@ impl<'a> TextAnnotations<'a> {
                     }
                     Ordering::Greater => break,
                 };
+            }
+        }
+    }
+
+    pub(crate) fn skip_concealed_anchors_until(&self, char_idx: usize) {
+        for (next_anchor, layer) in &self.line_annotations {
+            while next_anchor.get() < char_idx {
+                next_anchor.set(unsafe { layer.get().skip_concealed_anchors(char_idx) });
             }
         }
     }

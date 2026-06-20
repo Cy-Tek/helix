@@ -193,4 +193,23 @@ mod tests {
         let default_keys = Config::default().keys;
         assert_eq!(default_keys, keymap::default());
     }
+
+    #[test]
+    fn parses_folding_config() {
+        let config = Config::load_test(
+            r#"
+            [editor.folding]
+            enable = true
+            auto-fold-comments = true
+            source = "tree-sitter"
+        "#,
+        );
+
+        assert!(config.editor.folding.enable);
+        assert!(config.editor.folding.auto_fold_comments);
+        assert_eq!(
+            config.editor.folding.source,
+            helix_view::editor::FoldingSource::TreeSitter
+        );
+    }
 }

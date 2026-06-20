@@ -81,6 +81,19 @@
 | `make_search_word_bounded` | Modify current search to make it word bounded |  |
 | `global_search` | Global search in workspace folder | normal: `` <space>/ ``, select: `` <space>/ `` |
 | `buffer_search` | Search in current buffer | normal: `` <space>sb ``, select: `` <space>sb `` |
+| `fold_toggle` | Toggle fold under cursor | normal: `` Za ``, `` za ``, select: `` Za ``, `` za `` |
+| `fold_open` | Open fold under cursor | normal: `` Zo ``, `` zo ``, select: `` Zo ``, `` zo `` |
+| `fold_close` | Close fold under cursor | normal: `` Zc ``, `` zc ``, select: `` Zc ``, `` zc `` |
+| `fold_open_all` | Open all folds in current buffer | normal: `` ZR ``, `` zR ``, select: `` ZR ``, `` zR `` |
+| `fold_close_all` | Close all folds in current buffer | normal: `` ZM ``, `` zM ``, select: `` ZM ``, `` zM `` |
+| `fold_open_comments` | Open all comment folds in current buffer |  |
+| `fold_close_comments` | Close all comments in current buffer |  |
+| `fold_open_functions` | Open all function folds in current buffer |  |
+| `fold_close_functions` | Close all functions in current buffer |  |
+| `fold_open_methods` | Open all method folds in current buffer |  |
+| `fold_close_methods` | Close all methods in current buffer |  |
+| `fold_open_types` | Open all type folds in current buffer |  |
+| `fold_close_types` | Close all types in current buffer |  |
 | `extend_line` | Select current line, if already selected, extend to another line based on the anchor |  |
 | `extend_line_below` | Select current line, if already selected, extend to next line | normal: `` x ``, select: `` x `` |
 | `extend_line_above` | Select current line, if already selected, extend to previous line |  |
@@ -263,7 +276,7 @@
 | `copy_between_registers` | Copy between two registers |  |
 | `align_view_middle` | Align view middle | normal: `` Zm ``, `` zm ``, select: `` Zm ``, `` zm `` |
 | `align_view_top` | Align view top | normal: `` Zt ``, `` zt ``, select: `` Zt ``, `` zt `` |
-| `align_view_center` | Align view center | normal: `` Zc ``, `` Zz ``, `` zc ``, `` zz ``, select: `` Zc ``, `` Zz ``, `` zc ``, `` zz `` |
+| `align_view_center` | Align view center | normal: `` Zz ``, `` zz ``, select: `` Zz ``, `` zz `` |
 | `align_view_bottom` | Align view bottom | normal: `` Zb ``, `` zb ``, select: `` Zb ``, `` zb `` |
 | `scroll_up` | Scroll view up | normal: `` Zk ``, `` zk ``, `` Z<up> ``, `` z<up> ``, select: `` Zk ``, `` zk ``, `` Z<up> ``, `` z<up> `` |
 | `scroll_down` | Scroll view down | normal: `` Zj ``, `` zj ``, `` Z<down> ``, `` z<down> ``, select: `` Zj ``, `` zj ``, `` Z<down> ``, `` z<down> `` |

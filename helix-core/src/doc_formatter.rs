@@ -21,6 +21,7 @@ use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 
 use helix_stdx::rope::{RopeGraphemes, RopeSliceExt};
 
+use crate::fold::FoldRange;
 use crate::graphemes::{Grapheme, GraphemeStr};
 use crate::syntax::Highlight;
 use crate::text_annotations::TextAnnotations;
@@ -171,6 +172,7 @@ impl Default for TextFormat {
 
 #[derive(Debug)]
 pub struct DocumentFormatter<'t> {
+    text: RopeSlice<'t>,
     text_fmt: &'t TextFormat,
     annotations: &'t TextAnnotations<'t>,
 
@@ -184,6 +186,8 @@ pub struct DocumentFormatter<'t> {
     exhausted: bool,
 
     inline_annotation_graphemes: Option<(Graphemes<'t>, Option<Highlight>)>,
+    fold_placeholder_graphemes: Option<Graphemes<'t>>,
+    pending_fold: Option<&'t FoldRange>,
 
     // softwrap specific
     /// The indentation of the current line
@@ -217,6 +221,7 @@ impl<'t> DocumentFormatter<'t> {
         annotations.reset_pos(block_char_idx);
 
         DocumentFormatter {
+            text,
             text_fmt,
             annotations,
             visual_pos: Position { row: 0, col: 0 },
@@ -229,6 +234,8 @@ impl<'t> DocumentFormatter<'t> {
             word_i: 0,
             line_pos: block_line_idx,
             inline_annotation_graphemes: None,
+            fold_placeholder_graphemes: None,
+            pending_fold: None,
         }
     }
 
@@ -237,6 +244,13 @@ impl<'t> DocumentFormatter<'t> {
         char_pos: usize,
     ) -> Option<(&'t str, Option<Highlight>)> {
         loop {
+            if let Some(ref mut placeholder) = self.fold_placeholder_graphemes {
+                if let Some(grapheme) = placeholder.next() {
+                    return Some((grapheme, None));
+                }
+                self.fold_placeholder_graphemes = None;
+            }
+
             if let Some(&mut (ref mut annotation, highlight)) =
                 self.inline_annotation_graphemes.as_mut()
             {
@@ -252,6 +266,12 @@ impl<'t> DocumentFormatter<'t> {
                     UnicodeSegmentation::graphemes(&*annotation.text, true),
                     highlight,
                 ))
+            } else if let Some(fold) = self.annotations.next_fold_start_at(char_pos) {
+                self.pending_fold = Some(fold);
+                self.fold_placeholder_graphemes = Some(UnicodeSegmentation::graphemes(
+                    fold.placeholder.as_ref(),
+                    true,
+                ));
             } else {
                 return None;
             }
@@ -354,6 +374,24 @@ impl<'t> DocumentFormatter<'t> {
     fn next_grapheme(&mut self, col: usize, char_pos: usize) -> Option<GraphemeWithSource<'t>> {
         self.peek_grapheme(col, char_pos);
         self.peeked_grapheme.take()
+    }
+
+    fn skip_pending_fold_after_newline(&mut self) {
+        let Some(fold) = self.pending_fold.take() else {
+            return;
+        };
+
+        if fold.end_char <= self.char_pos {
+            return;
+        }
+
+        self.annotations.skip_concealed_anchors_until(fold.end_char);
+        self.char_pos = fold.end_char.min(self.text.len_chars());
+        self.line_pos = fold.end_line.saturating_add(1);
+        self.graphemes = self.text.slice(self.char_pos..).graphemes();
+        self.peeked_grapheme = None;
+        self.word_buf.clear();
+        self.word_i = 0;
     }
 
     fn advance_to_next_word(&mut self) {
@@ -471,6 +509,7 @@ impl<'t> Iterator for DocumentFormatter<'t> {
             if !grapheme.is_virtual() {
                 self.line_pos += 1;
             }
+            self.skip_pending_fold_after_newline();
         } else {
             self.visual_pos.col += grapheme.width();
         }

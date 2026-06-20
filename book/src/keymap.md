@@ -196,7 +196,12 @@ useful when you're simply looking over text and not actively editing it.
 
 | Key                  | Description                                               | Command                 |
 | -----                | -----------                                               | -------                 |
-| `z`, `c`             | Vertically center the line                                | `align_view_center`     |
+| `z`                  | Vertically center the line                                | `align_view_center`     |
+| `a`                  | Toggle fold under cursor                                  | `fold_toggle`           |
+| `c`                  | Close fold under cursor                                   | `fold_close`            |
+| `o`                  | Open fold under cursor                                    | `fold_open`             |
+| `M`                  | Close all folds in the buffer                             | `fold_close_all`        |
+| `R`                  | Open all folds in the buffer                              | `fold_open_all`         |
 | `t`                  | Align the line to the top of the screen                   | `align_view_top`        |
 | `b`                  | Align the line to the bottom of the screen                | `align_view_bottom`     |
 | `m`                  | Align the line to the middle of the screen (horizontally) | `align_view_middle`     |

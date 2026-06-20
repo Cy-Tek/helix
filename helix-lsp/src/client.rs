@@ -728,6 +728,21 @@ impl Client {
                         dynamic_registration: Some(false),
                         tooltip_support: Some(false),
                     }),
+                    folding_range: Some(lsp::FoldingRangeClientCapabilities {
+                        dynamic_registration: Some(false),
+                        line_folding_only: Some(true),
+                        folding_range_kind: Some(lsp::FoldingRangeKindCapability {
+                            value_set: Some(vec![
+                                lsp::FoldingRangeKind::Comment,
+                                lsp::FoldingRangeKind::Imports,
+                                lsp::FoldingRangeKind::Region,
+                            ]),
+                        }),
+                        folding_range: Some(lsp::FoldingRangeCapability {
+                            collapsed_text: Some(true),
+                        }),
+                        ..Default::default()
+                    }),
                     call_hierarchy: Some(lsp::DynamicRegistrationClientCapabilities {
                         dynamic_registration: Some(false),
                     }),
@@ -1270,6 +1285,30 @@ impl Client {
         };
 
         Some(self.call::<lsp::request::DocumentLinkRequest>(params))
+    }
+
+    pub fn text_document_folding_range(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+        work_done_token: Option<lsp::ProgressToken>,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::FoldingRange>>>>> {
+        self.capabilities
+            .get()
+            .unwrap()
+            .folding_range_provider
+            .as_ref()?;
+
+        let params = lsp::FoldingRangeParams {
+            text_document,
+            work_done_progress_params: lsp::WorkDoneProgressParams {
+                work_done_token: work_done_token.clone(),
+            },
+            partial_result_params: lsp::PartialResultParams {
+                partial_result_token: work_done_token,
+            },
+        };
+
+        Some(self.call::<lsp::request::FoldingRangeRequest>(params))
     }
 
     pub fn resolve_document_link(
