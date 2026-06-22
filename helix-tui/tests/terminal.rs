@@ -18,6 +18,7 @@ fn terminal_buffer_size_should_not_be_limited() {
 fn terminal_records_media_operations() {
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
+    assert_eq!(terminal.cell_size_pixels(), Some((10, 20)));
     let image = MediaImage {
         id: 7,
         area: Rect::new(10, 4, 20, 8),

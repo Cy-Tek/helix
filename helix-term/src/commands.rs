@@ -177,6 +177,7 @@ impl Context<'_> {
             scroll: None,
             media: &mut media_commands,
             supports_kitty_graphics: false,
+            cell_size_pixels: None,
         }
         .block_try_flush_writes()
     }
@@ -261,6 +262,7 @@ impl MappableCommand {
                         scroll: None,
                         media: &mut media_commands,
                         supports_kitty_graphics: false,
+                        cell_size_pixels: None,
                     };
                     if let Err(e) =
                         typed::execute_command(&mut cx, command, args, PromptEvent::Validate)

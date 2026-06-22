@@ -653,6 +653,18 @@ impl Backend for TerminaBackend {
         self.capabilities.kitty_graphics
     }
 
+    fn cell_size_pixels(&self) -> Option<(u16, u16)> {
+        let WindowSize {
+            rows,
+            cols,
+            pixel_width,
+            pixel_height,
+        } = self.terminal.get_dimensions().ok()?;
+        let cell_width = pixel_width?.checked_div(cols)?;
+        let cell_height = pixel_height?.checked_div(rows)?;
+        (cell_width > 0 && cell_height > 0).then_some((cell_width, cell_height))
+    }
+
     fn render_image(&mut self, image: &MediaImage) -> io::Result<()> {
         if !self.capabilities.kitty_graphics {
             return Ok(());

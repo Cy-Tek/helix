@@ -28,6 +28,7 @@ pub struct Context<'a> {
     pub jobs: &'a mut Jobs,
     pub media: &'a mut Vec<MediaCommand>,
     pub supports_kitty_graphics: bool,
+    pub cell_size_pixels: Option<(u16, u16)>,
 }
 
 impl Context<'_> {

@@ -269,6 +269,7 @@ impl Application {
             scroll: None,
             media: &mut media_commands,
             supports_kitty_graphics: self.terminal.supports_kitty_graphics(),
+            cell_size_pixels: self.terminal.cell_size_pixels(),
         };
 
         helix_event::start_frame();
@@ -577,6 +578,7 @@ impl Application {
             scroll: None,
             media: &mut media_commands,
             supports_kitty_graphics: false,
+            cell_size_pixels: None,
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
         if should_render || self.editor.needs_redraw {
@@ -704,6 +706,7 @@ impl Application {
             scroll: None,
             media: &mut media_commands,
             supports_kitty_graphics: false,
+            cell_size_pixels: None,
         };
         // Handle key events
         let should_redraw = match event.unwrap() {

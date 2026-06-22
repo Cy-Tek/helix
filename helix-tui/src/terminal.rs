@@ -194,6 +194,10 @@ where
         self.backend.supports_kitty_graphics()
     }
 
+    pub fn cell_size_pixels(&self) -> Option<(u16, u16)> {
+        self.backend.cell_size_pixels()
+    }
+
     pub fn draw_media(&mut self, commands: &[MediaCommand]) -> io::Result<()> {
         let image = commands.iter().find_map(|command| match command {
             MediaCommand::Image(image) => Some(image),

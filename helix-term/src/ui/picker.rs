@@ -161,14 +161,27 @@ fn cached_file_preview_from_bytes(
     bytes: &[u8],
     file_len: u64,
     preview_area: Rect,
+    cell_size_pixels: Option<(u16, u16)>,
 ) -> Option<CachedPreview> {
     if file_len > MAX_FILE_SIZE_FOR_PREVIEW {
         return Some(CachedPreview::LargeFile);
     }
 
     if image_preview::is_supported_image_path(path) {
+        let (cell_pixel_width, cell_pixel_height) = cell_size_pixels
+            .map(|(width, height)| (u32::from(width), u32::from(height)))
+            .unwrap_or((
+                image_preview::CELL_PIXEL_WIDTH,
+                image_preview::CELL_PIXEL_HEIGHT,
+            ));
         return Some(
-            match image_preview::decode_image_preview(path, bytes, preview_area) {
+            match image_preview::decode_image_preview(
+                path,
+                bytes,
+                preview_area,
+                cell_pixel_width,
+                cell_pixel_height,
+            ) {
                 Ok(image) => CachedPreview::Image(image),
                 Err(_) => CachedPreview::UnsupportedImage,
             },
@@ -622,6 +635,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         &'picker mut self,
         editor: &'editor Editor,
         preview_area: Rect,
+        cell_size_pixels: Option<(u16, u16)>,
     ) -> Option<(Preview<'picker, 'editor>, Option<(usize, usize)>)> {
         let current = self.selection()?;
         let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, current)?;
@@ -675,6 +689,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                                     &bytes,
                                     metadata.len(),
                                     preview_area,
+                                    cell_size_pixels,
                                 )
                                 .unwrap_or(CachedPreview::UnsupportedImage));
                             }
@@ -686,6 +701,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                                     &self.read_buffer[..n],
                                     metadata.len(),
                                     preview_area,
+                                    cell_size_pixels,
                                 )
                                 .is_some_and(|preview| matches!(preview, CachedPreview::Binary));
                                 self.read_buffer.clear();
@@ -949,12 +965,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let inner = inner.inner(margin);
         BLOCK.render(area, surface);
 
-        if let Some((preview, range)) = self.get_preview(cx.editor, inner) {
+        if let Some((preview, range)) = self.get_preview(cx.editor, inner, cx.cell_size_pixels) {
             if let Some(image) = preview.image() {
                 if cx.supports_kitty_graphics {
                     cx.media.push(MediaCommand::Image(MediaImage {
                         id: PICKER_PREVIEW_IMAGE_ID,
-                        area: inner,
+                        area: image.area,
                         width: image.width,
                         height: image.height,
                         payload_hash: image.payload_hash,
@@ -1298,10 +1314,16 @@ mod tests {
             &png_bytes(32, 16),
             100,
             Rect::new(0, 0, 20, 10),
+            Some((10, 20)),
         )
         .expect("image preview should be classified");
 
-        assert!(matches!(preview, CachedPreview::Image(_)));
+        let CachedPreview::Image(image) = preview else {
+            panic!("preview should be an image");
+        };
+        assert_eq!(image.area, Rect::new(0, 2, 20, 5));
+        assert_eq!(image.width, 200);
+        assert_eq!(image.height, 100);
     }
 
     #[test]
@@ -1311,6 +1333,7 @@ mod tests {
             b"not an image",
             12,
             Rect::new(0, 0, 20, 10),
+            Some((10, 20)),
         )
         .expect("unsupported image should be classified");
 
@@ -1324,6 +1347,7 @@ mod tests {
             &[],
             MAX_FILE_SIZE_FOR_PREVIEW + 1,
             Rect::new(0, 0, 20, 10),
+            Some((10, 20)),
         )
         .expect("large file should be classified");
 
@@ -1337,6 +1361,7 @@ mod tests {
             b"\0\0binary",
             8,
             Rect::new(0, 0, 20, 10),
+            Some((10, 20)),
         )
         .expect("binary should be classified");
 

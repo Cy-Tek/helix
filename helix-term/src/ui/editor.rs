@@ -1535,6 +1535,7 @@ impl Component for EditorView {
                                         scroll: None,
                                         media: &mut media_commands,
                                         supports_kitty_graphics: false,
+                                        cell_size_pixels: None,
                                     };
 
                                     if let EventResult::Consumed(callback) =

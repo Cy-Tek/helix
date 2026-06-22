@@ -88,6 +88,7 @@ fn request_auto_save(editor: &mut Editor) {
         jobs: &mut Jobs::new(),
         media: &mut media_commands,
         supports_kitty_graphics: false,
+        cell_size_pixels: None,
     };
 
     let options = commands::WriteAllOptions {

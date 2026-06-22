@@ -159,6 +159,10 @@ impl Backend for TestBackend {
         true
     }
 
+    fn cell_size_pixels(&self) -> Option<(u16, u16)> {
+        Some((10, 20))
+    }
+
     fn render_image(&mut self, image: &MediaImage) -> Result<(), io::Error> {
         self.media_operations
             .push(MediaOperation::RenderImage(image.clone()));

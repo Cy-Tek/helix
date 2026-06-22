@@ -48,6 +48,9 @@ pub trait Backend {
     fn supports_kitty_graphics(&self) -> bool {
         false
     }
+    fn cell_size_pixels(&self) -> Option<(u16, u16)> {
+        None
+    }
     fn render_image(&mut self, _image: &MediaImage) -> Result<(), io::Error> {
         Ok(())
     }
