@@ -8,6 +8,7 @@ use crate::{
     ui::{
         self,
         document::{render_document, LinePos, TextRenderer},
+        image_preview::{self, ImagePreview},
         picker::query::PickerQuery,
         text_decorations::DecorationManager,
         EditorView,
@@ -22,6 +23,7 @@ use tokio::sync::mpsc::Sender;
 use tui::{
     buffer::Buffer as Surface,
     layout::Constraint,
+    terminal::{MediaCommand, MediaImage},
     text::{Span, Spans},
     widgets::{Block, BorderType, Cell, Row, Table},
 };
@@ -59,6 +61,7 @@ pub const ID: &str = "picker";
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
+const PICKER_PREVIEW_IMAGE_ID: u32 = 1;
 
 #[derive(PartialEq, Eq, Hash)]
 pub enum PathOrId<'a> {
@@ -86,6 +89,8 @@ pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
 pub enum CachedPreview {
     Document(Box<Document>),
     Directory(Vec<(String, bool)>),
+    Image(ImagePreview),
+    UnsupportedImage,
     Binary,
     LargeFile,
     NotFound,
@@ -114,6 +119,13 @@ impl Preview<'_, '_> {
         }
     }
 
+    fn image(&self) -> Option<&ImagePreview> {
+        match self {
+            Preview::Cached(CachedPreview::Image(image)) => Some(image),
+            _ => None,
+        }
+    }
+
     /// Alternate text to show for the preview.
     fn placeholder(&self) -> &str {
         match *self {
@@ -121,6 +133,8 @@ impl Preview<'_, '_> {
             Self::Cached(preview) => match preview {
                 CachedPreview::Document(_) => "<Invalid file location>",
                 CachedPreview::Directory(_) => "<Invalid directory location>",
+                CachedPreview::Image(_) => "<Invalid image location>",
+                CachedPreview::UnsupportedImage => "<Unsupported image>",
                 CachedPreview::Binary => "<Binary file>",
                 CachedPreview::LargeFile => "<File too large to preview>",
                 CachedPreview::NotFound => "<File not found>",
@@ -140,6 +154,28 @@ fn inject_nucleo_item<T, D>(
             *text = column.format_text(item, editor_data).into()
         }
     });
+}
+
+fn cached_file_preview_from_bytes(
+    path: &Path,
+    bytes: &[u8],
+    file_len: u64,
+    preview_area: Rect,
+) -> Option<CachedPreview> {
+    if file_len > MAX_FILE_SIZE_FOR_PREVIEW {
+        return Some(CachedPreview::LargeFile);
+    }
+
+    if image_preview::is_supported_image_path(path) {
+        return Some(
+            match image_preview::decode_image_preview(path, bytes, preview_area) {
+                Ok(image) => CachedPreview::Image(image),
+                Err(_) => CachedPreview::UnsupportedImage,
+            },
+        );
+    }
+
+    crate::is_binary(bytes).then_some(CachedPreview::Binary)
 }
 
 pub struct Injector<T, D> {
@@ -585,6 +621,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     fn get_preview<'picker, 'editor>(
         &'picker mut self,
         editor: &'editor Editor,
+        preview_area: Rect,
     ) -> Option<(Preview<'picker, 'editor>, Option<(usize, usize)>)> {
         let current = self.selection()?;
         let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, current)?;
@@ -631,10 +668,26 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                             if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
                                 return Ok(CachedPreview::LargeFile);
                             }
+                            if image_preview::is_supported_image_path(&path) {
+                                let bytes = std::fs::read(&path)?;
+                                return Ok(cached_file_preview_from_bytes(
+                                    &path,
+                                    &bytes,
+                                    metadata.len(),
+                                    preview_area,
+                                )
+                                .unwrap_or(CachedPreview::UnsupportedImage));
+                            }
                             let is_binary = std::fs::File::open(&path).and_then(|file| {
                                 // Read up to 1kb to detect the content type
                                 let n = file.take(1024).read_to_end(&mut self.read_buffer)?;
-                                let is_binary = crate::is_binary(&self.read_buffer[..n]);
+                                let is_binary = cached_file_preview_from_bytes(
+                                    &path,
+                                    &self.read_buffer[..n],
+                                    metadata.len(),
+                                    preview_area,
+                                )
+                                .is_some_and(|preview| matches!(preview, CachedPreview::Binary));
                                 self.read_buffer.clear();
                                 Ok(is_binary)
                             })?;
@@ -896,7 +949,26 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let inner = inner.inner(margin);
         BLOCK.render(area, surface);
 
-        if let Some((preview, range)) = self.get_preview(cx.editor) {
+        if let Some((preview, range)) = self.get_preview(cx.editor, inner) {
+            if let Some(image) = preview.image() {
+                if cx.supports_kitty_graphics {
+                    cx.media.push(MediaCommand::Image(MediaImage {
+                        id: PICKER_PREVIEW_IMAGE_ID,
+                        area: inner,
+                        width: image.width,
+                        height: image.height,
+                        payload_hash: image.payload_hash,
+                        png: image.png.clone(),
+                    }));
+                } else {
+                    let alt_text = "<Image preview unavailable>";
+                    let x = inner.x + inner.width.saturating_sub(alt_text.len() as u16) / 2;
+                    let y = inner.y + inner.height / 2;
+                    surface.set_stringn(x, y, alt_text, inner.width as usize, text);
+                }
+                return;
+            }
+
             let doc = match preview.document() {
                 Some(doc)
                     if range.is_none_or(|(start, end)| {
@@ -1205,3 +1277,69 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
 }
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba([90, 80, 70, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("test PNG should encode");
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn supported_image_bytes_become_image_preview() {
+        let preview = cached_file_preview_from_bytes(
+            "sprite.png".as_ref(),
+            &png_bytes(32, 16),
+            100,
+            Rect::new(0, 0, 20, 10),
+        )
+        .expect("image preview should be classified");
+
+        assert!(matches!(preview, CachedPreview::Image(_)));
+    }
+
+    #[test]
+    fn undecodable_supported_image_gets_image_placeholder() {
+        let preview = cached_file_preview_from_bytes(
+            "broken.png".as_ref(),
+            b"not an image",
+            12,
+            Rect::new(0, 0, 20, 10),
+        )
+        .expect("unsupported image should be classified");
+
+        assert!(matches!(preview, CachedPreview::UnsupportedImage));
+    }
+
+    #[test]
+    fn oversized_file_stays_large_file() {
+        let preview = cached_file_preview_from_bytes(
+            "huge.png".as_ref(),
+            &[],
+            MAX_FILE_SIZE_FOR_PREVIEW + 1,
+            Rect::new(0, 0, 20, 10),
+        )
+        .expect("large file should be classified");
+
+        assert!(matches!(preview, CachedPreview::LargeFile));
+    }
+
+    #[test]
+    fn non_image_binary_stays_binary() {
+        let preview = cached_file_preview_from_bytes(
+            "asset.bin".as_ref(),
+            b"\0\0binary",
+            8,
+            Rect::new(0, 0, 20, 10),
+        )
+        .expect("binary should be classified");
+
+        assert!(matches!(preview, CachedPreview::Binary));
+    }
+}

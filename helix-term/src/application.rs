@@ -262,10 +262,13 @@ impl Application {
             self.compositor.full_redraw = false;
         }
 
+        let mut media_commands = Vec::new();
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            media: &mut media_commands,
+            supports_kitty_graphics: self.terminal.supports_kitty_graphics(),
         };
 
         helix_event::start_frame();
@@ -287,6 +290,7 @@ impl Application {
 
         let pos = pos.map(|pos| (pos.col as u16, pos.row as u16));
         self.terminal.draw(pos, kind).unwrap();
+        self.terminal.draw_media(&media_commands).unwrap();
     }
 
     pub async fn event_loop<S>(&mut self, input_stream: &mut S)
@@ -566,10 +570,13 @@ impl Application {
     }
 
     pub async fn handle_idle_timeout(&mut self) {
+        let mut media_commands = Vec::new();
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            media: &mut media_commands,
+            supports_kitty_graphics: false,
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
         if should_render || self.editor.needs_redraw {
@@ -690,10 +697,13 @@ impl Application {
         #[cfg(not(windows))]
         use termina::escape::csi;
 
+        let mut media_commands = Vec::new();
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            media: &mut media_commands,
+            supports_kitty_graphics: false,
         };
         // Handle key events
         let should_redraw = match event.unwrap() {

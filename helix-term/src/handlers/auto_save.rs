@@ -81,10 +81,13 @@ impl helix_event::AsyncHook for AutoSaveHandler {
 }
 
 fn request_auto_save(editor: &mut Editor) {
+    let mut media_commands = Vec::new();
     let context = &mut compositor::Context {
         editor,
         scroll: Some(0),
         jobs: &mut Jobs::new(),
+        media: &mut media_commands,
+        supports_kitty_graphics: false,
     };
 
     let options = commands::WriteAllOptions {

@@ -18,6 +18,7 @@ pub enum EventResult {
 use crate::job::Jobs;
 use crate::ui::picker;
 use helix_view::Editor;
+use tui::terminal::MediaCommand;
 
 pub use helix_view::input::Event;
 
@@ -25,6 +26,8 @@ pub struct Context<'a> {
     pub editor: &'a mut Editor,
     pub scroll: Option<usize>,
     pub jobs: &'a mut Jobs,
+    pub media: &'a mut Vec<MediaCommand>,
+    pub supports_kitty_graphics: bool,
 }
 
 impl Context<'_> {

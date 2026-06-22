@@ -2,7 +2,10 @@
 
 use std::io;
 
-use crate::{buffer::Cell, terminal::Config};
+use crate::{
+    buffer::Cell,
+    terminal::{Config, MediaImage},
+};
 
 use helix_view::{
     graphics::{CursorKind, Rect},
@@ -42,6 +45,15 @@ pub trait Backend {
     fn set_cursor(&mut self, x: u16, y: u16) -> Result<(), io::Error>;
     /// Clears the terminal
     fn clear(&mut self) -> Result<(), io::Error>;
+    fn supports_kitty_graphics(&self) -> bool {
+        false
+    }
+    fn render_image(&mut self, _image: &MediaImage) -> Result<(), io::Error> {
+        Ok(())
+    }
+    fn clear_image(&mut self, _id: u32) -> Result<(), io::Error> {
+        Ok(())
+    }
     /// Gets the size of the terminal in cells
     fn size(&self) -> Result<Rect, io::Error>;
     /// Flushes the terminal buffer

@@ -170,10 +170,13 @@ impl Context<'_> {
     /// Waits on all pending jobs, and then tries to flush all pending write
     /// operations for all documents.
     pub fn block_try_flush_writes(&mut self) -> anyhow::Result<()> {
+        let mut media_commands = Vec::new();
         compositor::Context {
             editor: self.editor,
             jobs: self.jobs,
             scroll: None,
+            media: &mut media_commands,
+            supports_kitty_graphics: false,
         }
         .block_try_flush_writes()
     }
@@ -251,10 +254,13 @@ impl MappableCommand {
         match &self {
             Self::Typable { name, args, doc: _ } => {
                 if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
+                    let mut media_commands = Vec::new();
                     let mut cx = compositor::Context {
                         editor: cx.editor,
                         jobs: cx.jobs,
                         scroll: None,
+                        media: &mut media_commands,
+                        supports_kitty_graphics: false,
                     };
                     if let Err(e) =
                         typed::execute_command(&mut cx, command, args, PromptEvent::Validate)

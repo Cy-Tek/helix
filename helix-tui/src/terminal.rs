@@ -6,6 +6,48 @@ use helix_view::editor::{Config as EditorConfig, KittyKeyboardProtocolConfig};
 use helix_view::graphics::{CursorKind, Rect};
 use std::io;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaImage {
+    pub id: u32,
+    pub area: Rect,
+    pub width: u32,
+    pub height: u32,
+    pub payload_hash: u64,
+    pub png: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaCommand {
+    Image(MediaImage),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaOperation {
+    RenderImage(MediaImage),
+    ClearImage { id: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MediaImageKey {
+    id: u32,
+    area: Rect,
+    width: u32,
+    height: u32,
+    payload_hash: u64,
+}
+
+impl From<&MediaImage> for MediaImageKey {
+    fn from(image: &MediaImage) -> Self {
+        Self {
+            id: image.id,
+            area: image.area,
+            width: image.width,
+            height: image.height,
+            payload_hash: image.payload_hash,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// UNSTABLE
 enum ResizeBehavior {
@@ -71,6 +113,7 @@ where
     cursor_kind: CursorKind,
     /// Viewport
     viewport: Viewport,
+    current_media: Option<MediaImageKey>,
 }
 
 /// Default terminal size: 80 columns, 24 lines
@@ -111,6 +154,7 @@ where
             current: 0,
             cursor_kind: CursorKind::Block,
             viewport: options.viewport,
+            current_media: None,
         })
     }
 
@@ -144,6 +188,36 @@ where
 
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    pub fn supports_kitty_graphics(&self) -> bool {
+        self.backend.supports_kitty_graphics()
+    }
+
+    pub fn draw_media(&mut self, commands: &[MediaCommand]) -> io::Result<()> {
+        let image = commands.iter().find_map(|command| match command {
+            MediaCommand::Image(image) => Some(image),
+        });
+
+        match image {
+            Some(image) => {
+                let key = MediaImageKey::from(image);
+                if self.current_media.as_ref() != Some(&key) {
+                    if let Some(current) = self.current_media.take() {
+                        self.backend.clear_image(current.id)?;
+                    }
+                    self.backend.render_image(image)?;
+                    self.current_media = Some(key);
+                }
+            }
+            None => {
+                if let Some(current) = self.current_media.take() {
+                    self.backend.clear_image(current.id)?;
+                }
+            }
+        }
+
+        self.backend.flush()
     }
 
     /// Obtains a difference between the previous and the current buffer and passes it to the
@@ -236,6 +310,9 @@ where
 
     /// Clear the terminal and force a full redraw on the next draw call.
     pub fn clear(&mut self) -> io::Result<()> {
+        if let Some(current) = self.current_media.take() {
+            self.backend.clear_image(current.id)?;
+        }
         self.backend.clear()?;
         // Reset the back buffer to make sure the next update will redraw everything.
         self.buffers[1 - self.current].reset();

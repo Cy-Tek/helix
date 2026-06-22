@@ -15,7 +15,10 @@ use termina::{
     Event, OneBased, PlatformTerminal, Terminal as _, WindowSize,
 };
 
-use crate::{buffer::Cell, terminal::Config};
+use crate::{
+    buffer::Cell,
+    terminal::{Config, MediaImage},
+};
 
 use super::Backend;
 
@@ -47,12 +50,57 @@ fn vte_version() -> Option<usize> {
     std::env::var("VTE_VERSION").ok()?.parse().ok()
 }
 
+fn detect_kitty_graphics() -> bool {
+    if std::env::var_os("KITTY_WINDOW_ID").is_some() {
+        return true;
+    }
+
+    if std::env::var("TERM")
+        .is_ok_and(|term| term.contains("xterm-kitty") || term.contains("kitty"))
+    {
+        return true;
+    }
+
+    matches!(
+        term_program().as_deref(),
+        Some("kitty" | "WezTerm" | "WezTerm-gui" | "Ghostty" | "ghostty")
+    )
+}
+
+fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(input.len().div_ceil(3) * 4);
+
+    for chunk in input.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        let triple = ((first as u32) << 16) | ((second as u32) << 8) | third as u32;
+
+        encoded.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
+        encoded.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(triple & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+
+    encoded
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct Capabilities {
     kitty_keyboard: KittyKeyboardSupport,
     synchronized_output: bool,
     true_color: bool,
     extended_underlines: bool,
+    kitty_graphics: bool,
     /// OSC11 / OSC111 - change the terminal's background color.
     dynamic_background_color: bool,
     theme_mode: Option<theme::Mode>,
@@ -103,6 +151,7 @@ impl TerminaBackend {
 
         // HACK: emitting OSC11 / OSC111 seems to break SGR and cause flickering in tmux.
         capabilities.dynamic_background_color = std::env::var_os("TMUX").is_none();
+        capabilities.kitty_graphics = detect_kitty_graphics();
 
         capabilities.kitty_keyboard = match config.kitty_keyboard_protocol {
             KittyKeyboardProtocolConfig::Disabled => KittyKeyboardSupport::None,
@@ -598,6 +647,49 @@ impl Backend for TerminaBackend {
             Csi::Edit(csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseDisplay))
         )?;
         self.flush()
+    }
+
+    fn supports_kitty_graphics(&self) -> bool {
+        self.capabilities.kitty_graphics
+    }
+
+    fn render_image(&mut self, image: &MediaImage) -> io::Result<()> {
+        if !self.capabilities.kitty_graphics {
+            return Ok(());
+        }
+
+        write!(
+            self.terminal,
+            "{}",
+            Csi::Cursor(csi::Cursor::Position {
+                line: OneBased::from_zero_based(image.area.y),
+                col: OneBased::from_zero_based(image.area.x),
+            })
+        )?;
+
+        let encoded = encode_base64(&image.png);
+        let mut chunks = encoded.as_bytes().chunks(4096).peekable();
+        while let Some(chunk) = chunks.next() {
+            let more_chunks = chunks.peek().is_some();
+            write!(
+                self.terminal,
+                "\x1b_Ga=T,f=100,i={},q=2,c={},r={},m={};{}\x1b\\",
+                image.id,
+                image.area.width,
+                image.area.height,
+                if more_chunks { 1 } else { 0 },
+                std::str::from_utf8(chunk).unwrap_or_default(),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn clear_image(&mut self, id: u32) -> io::Result<()> {
+        if self.capabilities.kitty_graphics {
+            write!(self.terminal, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", id)?;
+        }
+        Ok(())
     }
 
     fn size(&self) -> io::Result<Rect> {

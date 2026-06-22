@@ -1528,10 +1528,13 @@ impl Component for EditorView {
                             if let Some(completion) = &mut self.completion {
                                 let res = {
                                     // use a fake context here
+                                    let mut media_commands = Vec::new();
                                     let mut cx = Context {
                                         editor: cx.editor,
                                         jobs: cx.jobs,
                                         scroll: None,
+                                        media: &mut media_commands,
+                                        supports_kitty_graphics: false,
                                     };
 
                                     if let EventResult::Consumed(callback) =

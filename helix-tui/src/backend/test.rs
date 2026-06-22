@@ -1,7 +1,7 @@
 use crate::{
     backend::Backend,
     buffer::{Buffer, Cell},
-    terminal::Config,
+    terminal::{Config, MediaImage, MediaOperation},
 };
 use helix_core::unicode::width::UnicodeWidthStr;
 use helix_view::graphics::{CursorKind, Rect};
@@ -15,6 +15,7 @@ pub struct TestBackend {
     height: u16,
     cursor: bool,
     pos: (u16, u16),
+    media_operations: Vec<MediaOperation>,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -54,6 +55,7 @@ impl TestBackend {
             buffer: Buffer::empty(Rect::new(0, 0, width, height)),
             cursor: false,
             pos: (0, 0),
+            media_operations: Vec::new(),
         }
     }
 
@@ -104,6 +106,10 @@ impl TestBackend {
         debug_info.push_str(&nice_diff);
         panic!("{}", debug_info);
     }
+
+    pub fn media_operations(&self) -> &[MediaOperation] {
+        &self.media_operations
+    }
 }
 
 impl Backend for TestBackend {
@@ -146,6 +152,22 @@ impl Backend for TestBackend {
 
     fn clear(&mut self) -> Result<(), io::Error> {
         self.buffer.reset();
+        Ok(())
+    }
+
+    fn supports_kitty_graphics(&self) -> bool {
+        true
+    }
+
+    fn render_image(&mut self, image: &MediaImage) -> Result<(), io::Error> {
+        self.media_operations
+            .push(MediaOperation::RenderImage(image.clone()));
+        Ok(())
+    }
+
+    fn clear_image(&mut self, id: u32) -> Result<(), io::Error> {
+        self.media_operations
+            .push(MediaOperation::ClearImage { id });
         Ok(())
     }
 
