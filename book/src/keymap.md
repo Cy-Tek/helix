@@ -302,8 +302,8 @@ This layer is a kludge of mappings, mostly pickers.
 | `ff`    | Open file picker at LSP workspace root                                  | `file_picker`                              |
 | `fF`    | Open file picker at current working directory                           | `file_picker_in_current_directory`         |
 | `f.`    | Open file picker at current buffer's directory                          | `file_picker_in_current_buffer_directory`  |
-| `fe`    | Open file explorer at workspace root                                    | `file_explorer`                            |
-| `fE`    | Open file explorer at current working directory                         | `file_explorer_in_current_directory`       |
+| `fe`    | Open tree file manager at active project root                           | `file_explorer`                            |
+| `fE`    | Open tree file manager at current working directory                     | `file_explorer_in_current_directory`       |
 | `fr`    | Open recent file picker for current project                             | `recent_file_picker`                       |
 | `fR`    | Open all recent file picker                                             | `all_recent_file_picker`                   |
 | `b`     | Open project-local buffer picker                                        | `buffer_picker`                            |

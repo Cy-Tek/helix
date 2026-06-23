@@ -114,9 +114,9 @@
 | `file_picker` | Open file picker | normal: `` <space>ff ``, select: `` <space>ff `` |
 | `file_picker_in_current_buffer_directory` | Open file picker at current buffer's directory | normal: `` <space>f. ``, select: `` <space>f. `` |
 | `file_picker_in_current_directory` | Open file picker at current working directory | normal: `` <space>fF ``, select: `` <space>fF `` |
-| `file_explorer` | Open file explorer in workspace root | normal: `` <space>fe ``, select: `` <space>fe `` |
-| `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory |  |
-| `file_explorer_in_current_directory` | Open file explorer at current working directory | normal: `` <space>fE ``, select: `` <space>fE `` |
+| `file_explorer` | Open tree file manager at active project root | normal: `` <space>fe ``, select: `` <space>fe `` |
+| `file_explorer_in_current_buffer_directory` | Open tree file manager at current buffer's directory |  |
+| `file_explorer_in_current_directory` | Open tree file manager at current working directory | normal: `` <space>fE ``, select: `` <space>fE `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `recent_file_picker` | Open recent file picker for current project | normal: `` <space>fr ``, select: `` <space>fr `` |
 | `all_recent_file_picker` | Open all recent file picker | normal: `` <space>fR ``, select: `` <space>fR `` |

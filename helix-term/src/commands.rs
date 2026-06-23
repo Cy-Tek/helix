@@ -426,9 +426,9 @@ impl MappableCommand {
         file_picker, "Open file picker",
         file_picker_in_current_buffer_directory, "Open file picker at current buffer's directory",
         file_picker_in_current_directory, "Open file picker at current working directory",
-        file_explorer, "Open file explorer in workspace root",
-        file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
-        file_explorer_in_current_directory, "Open file explorer at current working directory",
+        file_explorer, "Open tree file manager at active project root",
+        file_explorer_in_current_buffer_directory, "Open tree file manager at current buffer's directory",
+        file_explorer_in_current_directory, "Open tree file manager at current working directory",
         code_action, "Perform code action",
         recent_file_picker, "Open recent file picker for current project",
         all_recent_file_picker, "Open all recent file picker",
@@ -3652,6 +3652,19 @@ fn workspace_file_picker_root_from(
         .unwrap_or_else(fallback)
 }
 
+fn workspace_file_tree_root(editor: &Editor) -> PathBuf {
+    workspace_file_tree_root_from(editor.active_project_root(), || find_workspace().0)
+}
+
+fn workspace_file_tree_root_from(
+    active_project_root: Option<&Path>,
+    fallback: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    active_project_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(fallback)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3674,6 +3687,17 @@ mod tests {
         assert_eq!(
             workspace_file_picker_root_from(None, || fallback_root.clone()),
             fallback_root
+        );
+    }
+
+    #[test]
+    fn workspace_file_tree_root_prefers_active_project_root() {
+        let project_root = Path::new("/tmp/helix-project");
+        let fallback_root = PathBuf::from("/tmp/fallback");
+
+        assert_eq!(
+            workspace_file_tree_root_from(Some(project_root), || fallback_root.clone()),
+            project_root
         );
     }
 }
@@ -3777,15 +3801,13 @@ fn recent_files_picker(editor: &Editor, items: Vec<PathBuf>) -> Picker<PathBuf, 
 }
 
 fn file_explorer(cx: &mut Context) {
-    let root = find_workspace().0;
+    let root = workspace_file_tree_root(cx.editor);
     if !root.exists() {
         cx.editor.set_error("Workspace directory does not exist");
         return;
     }
 
-    if let Ok(picker) = ui::file_explorer(root, cx.editor) {
-        cx.push_layer(Box::new(overlaid(picker)));
-    }
+    cx.push_layer(Box::new(overlaid(ui::file_tree::FileTree::new(root))));
 }
 
 fn file_explorer_in_current_buffer_directory(cx: &mut Context) {
@@ -3810,9 +3832,7 @@ fn file_explorer_in_current_buffer_directory(cx: &mut Context) {
         }
     };
 
-    if let Ok(picker) = ui::file_explorer(path, cx.editor) {
-        cx.push_layer(Box::new(overlaid(picker)));
-    }
+    cx.push_layer(Box::new(overlaid(ui::file_tree::FileTree::new(path))));
 }
 
 fn file_explorer_in_current_directory(cx: &mut Context) {
@@ -3823,9 +3843,7 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
         return;
     }
 
-    if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
-        cx.push_layer(Box::new(overlaid(picker)));
-    }
+    cx.push_layer(Box::new(overlaid(ui::file_tree::FileTree::new(cwd))));
 }
 
 struct PathStyleConfig {
