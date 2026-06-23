@@ -58,10 +58,17 @@ impl FileTree {
     }
 
     fn refresh(&mut self) {
-        self.load_options.show_hidden = self.model.show_hidden();
-        if let Ok(entries) = load_tree_entries(self.model.root(), &self.load_options) {
+        let options = self.direct_load_options();
+        if let Ok(entries) = load_tree_entries(self.model.root(), &options) {
             self.model.replace_entries(entries);
         }
+    }
+
+    fn direct_load_options(&self) -> TreeLoadOptions {
+        let mut options = self.load_options.clone();
+        options.show_hidden = self.model.show_hidden();
+        options.max_depth = Some(0);
+        options
     }
 
     fn prompt_create(&self, cx: &mut Context) -> EventResult {
@@ -103,6 +110,7 @@ impl FileTree {
         kind: OperationPromptKind,
     ) -> EventResult {
         let root = self.model.root().to_path_buf();
+        let create_base = self.model.create_base_directory();
         let targets = self.model.operation_targets();
         let prompt = super::Prompt::new(
             label.into(),
@@ -113,7 +121,7 @@ impl FileTree {
                     return;
                 }
 
-                let operations = operations_from_prompt(kind, &root, &targets, input);
+                let operations = operations_from_prompt(kind, &root, &create_base, &targets, input);
                 if operations.is_empty() {
                     return;
                 }
@@ -154,15 +162,33 @@ impl FileTree {
         EventResult::Consumed(None)
     }
 
+    fn expand_selected_directory(&mut self) {
+        let Some(entry) = self.model.selected_entry().cloned() else {
+            return;
+        };
+        if !entry.is_dir() {
+            return;
+        }
+
+        if !self.model.children_loaded(&entry.path) {
+            let options = self.direct_load_options();
+            if let Ok(mut children) = load_tree_entries(&entry.path, &options) {
+                for child in &mut children {
+                    child.depth += entry.depth + 1;
+                }
+                self.model.replace_children(&entry.path, children);
+            }
+        }
+        self.model.expand(&entry.path);
+    }
+
     fn expand_or_open_selected(&mut self, ctx: &mut Context) -> EventResult {
         let Some(entry) = self.model.selected_entry().cloned() else {
             return EventResult::Consumed(None);
         };
 
         if entry.is_dir() {
-            if !self.model.is_expanded(&entry.path) {
-                self.model.toggle_expanded(&entry.path);
-            }
+            self.expand_selected_directory();
             return EventResult::Consumed(None);
         }
 
@@ -192,6 +218,7 @@ fn execute_operations(operations: Vec<FileOperation>) -> Result<(), FileOperatio
 fn operations_from_prompt(
     kind: OperationPromptKind,
     root: &Path,
+    create_base: &Path,
     targets: &[PathBuf],
     input: &str,
 ) -> Vec<FileOperation> {
@@ -202,7 +229,7 @@ fn operations_from_prompt(
 
     match kind {
         OperationPromptKind::Create => {
-            let path = resolve_prompt_path(root, input);
+            let path = resolve_prompt_path(create_base, input);
             if input.ends_with(std::path::MAIN_SEPARATOR) {
                 vec![FileOperation::CreateDirectory { path }]
             } else {

@@ -45,6 +45,7 @@ pub struct FileTreeModel {
     root: PathBuf,
     entries: Vec<FileTreeEntry>,
     expanded: BTreeSet<PathBuf>,
+    loaded_children: BTreeSet<PathBuf>,
     marked: BTreeSet<PathBuf>,
     selected: usize,
     show_hidden: bool,
@@ -57,6 +58,7 @@ impl FileTreeModel {
             root,
             entries: Vec::new(),
             expanded: BTreeSet::new(),
+            loaded_children: BTreeSet::new(),
             marked: BTreeSet::new(),
             selected: 0,
             show_hidden: false,
@@ -70,10 +72,53 @@ impl FileTreeModel {
 
     pub fn replace_entries(&mut self, entries: Vec<FileTreeEntry>) {
         self.entries = entries;
+        self.expanded.clear();
+        self.loaded_children.clear();
+        self.loaded_children.insert(self.root.clone());
         self.selected = self
             .selected
             .min(self.visible_entries().len().saturating_sub(1));
         self.generation += 1;
+    }
+
+    pub fn replace_children(&mut self, parent: &Path, children: Vec<FileTreeEntry>) {
+        let Some(parent_index) = self.entries.iter().position(|entry| entry.path == parent) else {
+            return;
+        };
+        let selected_path = self.selected_path().map(Path::to_path_buf);
+        let parent_depth = self.entries[parent_index].depth;
+        let start = parent_index + 1;
+        let end = self.entries[start..]
+            .iter()
+            .position(|entry| entry.depth <= parent_depth)
+            .map(|offset| start + offset)
+            .unwrap_or(self.entries.len());
+
+        for entry in &self.entries[start..end] {
+            self.loaded_children.remove(&entry.path);
+            self.expanded.remove(&entry.path);
+        }
+
+        self.entries.splice(start..end, children);
+        self.loaded_children.insert(parent.to_path_buf());
+
+        self.selected = selected_path
+            .and_then(|path| {
+                self.visible_entries()
+                    .iter()
+                    .position(|entry| entry.path == path)
+            })
+            .unwrap_or_else(|| {
+                self.visible_entries()
+                    .iter()
+                    .position(|entry| entry.path == parent)
+                    .unwrap_or(0)
+            });
+        self.generation += 1;
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
     }
 
     pub fn visible_entries(&self) -> Vec<&FileTreeEntry> {
@@ -137,6 +182,18 @@ impl FileTreeModel {
             .collect()
     }
 
+    pub fn create_base_directory(&self) -> PathBuf {
+        match self.selected_entry() {
+            Some(entry) if entry.is_dir() => entry.path.clone(),
+            Some(entry) => entry
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone()),
+            None => self.root.clone(),
+        }
+    }
+
     pub fn clear_marks(&mut self) {
         self.marked.clear();
     }
@@ -147,8 +204,16 @@ impl FileTreeModel {
         }
     }
 
+    pub fn expand(&mut self, path: &Path) {
+        self.expanded.insert(path.to_path_buf());
+    }
+
     pub fn is_expanded(&self, path: &Path) -> bool {
         self.expanded.contains(path)
+    }
+
+    pub fn children_loaded(&self, path: &Path) -> bool {
+        self.loaded_children.contains(path)
     }
 
     pub fn reveal_path(&mut self, path: &Path) -> bool {

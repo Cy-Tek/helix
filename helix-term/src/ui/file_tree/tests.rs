@@ -103,6 +103,48 @@ fn operation_targets_use_marks_before_selection() {
 }
 
 #[test]
+fn create_base_uses_selected_directory() {
+    let mut model = FileTreeModel::new(path("/project"));
+    model.replace_entries(vec![
+        FileTreeEntry::new(path("/project/src"), FileTreeNodeKind::Directory, 0),
+        FileTreeEntry::new(path("/project/README.md"), FileTreeNodeKind::File, 0),
+    ]);
+
+    assert_eq!(model.create_base_directory(), path("/project/src"));
+}
+
+#[test]
+fn create_base_uses_selected_files_parent() {
+    let mut model = FileTreeModel::new(path("/project"));
+    model.replace_entries(vec![
+        FileTreeEntry::new(path("/project/src"), FileTreeNodeKind::Directory, 0),
+        FileTreeEntry::new(path("/project/src/main.rs"), FileTreeNodeKind::File, 1),
+    ]);
+    model.toggle_expanded(&path("/project/src"));
+    model.select_next();
+
+    assert_eq!(model.create_base_directory(), path("/project/src"));
+}
+
+#[test]
+fn create_operation_resolves_relative_to_create_base() {
+    let operations = super::operations_from_prompt(
+        super::OperationPromptKind::Create,
+        &path("/project"),
+        &path("/project/src"),
+        &[],
+        "ui/mod.rs",
+    );
+
+    assert_eq!(
+        operations,
+        vec![FileOperation::CreateFile {
+            path: path("/project/src/ui/mod.rs")
+        }]
+    );
+}
+
+#[test]
 fn reveal_expands_ancestors_and_selects_path() {
     let mut model = FileTreeModel::new(path("/project"));
     model.replace_entries(vec![
@@ -151,22 +193,46 @@ fn loader_sorts_directories_before_files() {
 }
 
 #[test]
-fn loaded_tree_keeps_descendants_visible_under_expanded_parent() {
+fn file_tree_initial_load_only_reads_root_children() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("src")).unwrap();
-    std::fs::create_dir_all(dir.path().join("test")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
     std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+    std::fs::write(dir.path().join("src/nested/deep.rs"), "").unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
 
-    let entries = load_tree_entries(dir.path(), &TreeLoadOptions::default()).unwrap();
+    let tree = super::FileTree::new(dir.path().to_path_buf());
+
+    assert_eq!(tree.model.entry_count(), 2);
+    assert_eq!(
+        tree.model.visible_paths(),
+        vec![dir.path().join("src"), dir.path().join("README.md")]
+    );
+}
+
+#[test]
+fn expanding_directory_loads_only_that_directorys_direct_children() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+    std::fs::write(dir.path().join("src/nested/deep.rs"), "").unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+
+    let mut tree = super::FileTree::new(dir.path().to_path_buf());
     let src = dir.path().join("src");
-    let main = dir.path().join("src/main.rs");
-    let test = dir.path().join("test");
-    let mut model = FileTreeModel::new(dir.path().to_path_buf());
-    model.replace_entries(entries);
 
-    model.toggle_expanded(&src);
+    tree.expand_selected_directory();
 
-    assert_eq!(model.visible_paths(), vec![src, main, test]);
+    assert_eq!(
+        tree.model.visible_paths(),
+        vec![
+            src.clone(),
+            dir.path().join("src/nested"),
+            dir.path().join("src/main.rs"),
+            dir.path().join("README.md")
+        ]
+    );
+    assert_eq!(tree.model.entry_count(), 4);
+    assert!(tree.model.children_loaded(&src));
 }
 
 #[test]
