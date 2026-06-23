@@ -38,6 +38,11 @@ impl FileTreePreview {
     pub(crate) fn into_inner(self) -> CachedPreview {
         self.inner
     }
+
+    #[cfg(test)]
+    pub(crate) fn document_has_syntax(&self) -> bool {
+        matches!(&self.inner, CachedPreview::Document(doc) if doc.syntax().is_some())
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -111,11 +116,7 @@ impl FileTreePreviewProvider {
             return Some(FileTreePreview { inner });
         }
 
-        let mut doc = Document::open(path, None, false, config, syn_loader.clone()).ok()?;
-        let loader = syn_loader.load();
-        if let Some(language_config) = doc.detect_language_config(&loader) {
-            doc.language = Some(language_config);
-        }
+        let doc = Document::open(path, None, true, config, syn_loader).ok()?;
         Some(FileTreePreview {
             inner: CachedPreview::Document(Box::new(doc)),
         })

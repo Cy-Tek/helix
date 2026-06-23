@@ -15,7 +15,7 @@ use super::git::{parse_porcelain_status, GitBadge};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
 use super::ops::{FileOperation, FileOperationService};
 use super::preview::{FileTreePreviewProvider, PreviewKind};
-use super::render::{file_tree_layout, render_tree_rows, FileTreeLayout};
+use super::render::{file_tree_layout, file_tree_panel_inner, render_tree_rows, FileTreeLayout};
 use helix_view::{graphics::Rect, theme::Style};
 use tui::buffer::Buffer as Surface;
 
@@ -263,6 +263,24 @@ fn preview_provider_classifies_text_files_as_documents() {
 }
 
 #[test]
+fn preview_provider_detects_syntax_for_known_text_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.rs");
+    std::fs::write(&path, "fn main() {}\n").unwrap();
+    let config: Arc<dyn DynAccess<EditorConfig>> =
+        Arc::new(ArcSwap::from_pointee(EditorConfig::default()));
+    let syn_loader = Arc::new(ArcSwap::from_pointee(test_syntax_loader()));
+
+    let provider = FileTreePreviewProvider;
+    let preview = provider
+        .preview_path_with_loaders(&path, Rect::new(0, 0, 40, 20), None, config, syn_loader)
+        .unwrap();
+
+    assert_eq!(preview.kind(), PreviewKind::Document);
+    assert!(preview.document_has_syntax());
+}
+
+#[test]
 fn parses_porcelain_status_into_badges() {
     let output = b" M src/main.rs\0?? assets/new.png\0A  Cargo.toml\0";
     let badges = parse_porcelain_status(PathBuf::from("/project").as_path(), output);
@@ -336,6 +354,13 @@ fn layout_uses_tree_only_when_narrow() {
     let layout = file_tree_layout(Rect::new(0, 0, 60, 40));
 
     assert!(matches!(layout, FileTreeLayout::TreeOnly { .. }));
+}
+
+#[test]
+fn panel_inner_reserves_space_for_outer_border() {
+    let inner = file_tree_panel_inner(Rect::new(4, 5, 40, 20));
+
+    assert_eq!(inner, Rect::new(5, 6, 38, 18));
 }
 
 fn rendered_line(surface: &Surface, y: u16, width: u16) -> String {

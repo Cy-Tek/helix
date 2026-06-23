@@ -9,6 +9,7 @@ use helix_view::{
     graphics::{CursorKind, Rect},
 };
 use tui::buffer::Buffer as Surface;
+use tui::widgets::{Block, Widget};
 
 use self::{
     fs::{load_tree_entries, TreeLoadOptions},
@@ -343,8 +344,15 @@ impl Component for FileTree {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, ctx: &mut Context) {
-        surface.clear_with(area, ctx.editor.theme.get("ui.background"));
-        let layout = render::file_tree_layout(area);
+        let panel_style = ctx.editor.theme.get("ui.popup");
+        let border_style = ctx.editor.theme.get("ui.window");
+        surface.clear_with(area, panel_style);
+        Block::bordered()
+            .border_style(border_style)
+            .render(area, surface);
+
+        let panel_inner = render::file_tree_panel_inner(area);
+        let layout = render::file_tree_layout(panel_inner);
         let tree_area = match layout {
             render::FileTreeLayout::TreeOnly { tree } => tree,
             render::FileTreeLayout::TreeAndPreview { tree, preview } => {
@@ -356,6 +364,7 @@ impl Component for FileTree {
                             None,
                             preview,
                             surface,
+                            panel_style,
                             ctx.editor,
                             ctx.supports_kitty_graphics,
                             ctx.media,
@@ -375,6 +384,7 @@ impl Component for FileTree {
                             None,
                             preview,
                             surface,
+                            panel_style,
                             ctx.editor,
                             ctx.supports_kitty_graphics,
                             ctx.media,
@@ -391,9 +401,9 @@ impl Component for FileTree {
             &rows,
             self.model.selected_index(),
             |path| self.model.is_expanded(path),
-            ctx.editor.theme.get("ui.text"),
-            ctx.editor.theme.get("ui.selection"),
-            ctx.editor.theme.get("ui.text.directory"),
+            panel_style.patch(ctx.editor.theme.get("ui.text")),
+            panel_style.patch(ctx.editor.theme.get("ui.selection")),
+            panel_style.patch(ctx.editor.theme.get("ui.text.directory")),
         );
     }
 

@@ -5,7 +5,7 @@ use crate::ui::{
     EditorView,
 };
 use helix_core::{char_idx_at_visual_offset, text_annotations::TextAnnotations};
-use helix_view::{graphics::Rect, view::ViewPosition, Editor};
+use helix_view::{graphics::Rect, theme::Style, view::ViewPosition, Editor};
 use tui::{
     buffer::Buffer as Surface,
     terminal::{MediaCommand, MediaImage},
@@ -24,18 +24,18 @@ pub(crate) fn render_preview(
     range: Option<(usize, usize)>,
     area: Rect,
     surface: &mut Surface,
+    background: Style,
     editor: &Editor,
     supports_kitty_graphics: bool,
     media: &mut Vec<MediaCommand>,
 ) {
-    let background = editor.theme.get("ui.background");
-    let text = editor.theme.get("ui.text");
-    let directory = editor.theme.get("ui.text.directory");
+    let text = background.patch(editor.theme.get("ui.text"));
+    let directory = background.patch(editor.theme.get("ui.text.directory"));
     surface.clear_with(area, background);
 
-    const BLOCK: Block<'_> = Block::bordered();
+    let block = Block::bordered().border_style(editor.theme.get("ui.window"));
     let inner = preview_content_area(area);
-    BLOCK.render(area, surface);
+    block.render(area, surface);
 
     if let Some(image) = preview.image() {
         if supports_kitty_graphics {

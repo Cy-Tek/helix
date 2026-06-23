@@ -949,6 +949,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 range,
                 area,
                 surface,
+                cx.editor.theme.get("ui.background"),
                 cx.editor,
                 cx.supports_kitty_graphics,
                 cx.media,

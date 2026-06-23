@@ -2,6 +2,7 @@ use std::path::Path;
 
 use helix_view::{graphics::Rect, theme::Style};
 use tui::buffer::Buffer as Surface;
+use tui::widgets::Block;
 
 use super::model::{FileTreeEntry, FileTreeNodeKind};
 
@@ -11,6 +12,10 @@ pub const MIN_WIDTH_FOR_TREE_PREVIEW: u16 = 90;
 pub enum FileTreeLayout {
     TreeOnly { tree: Rect },
     TreeAndPreview { tree: Rect, preview: Rect },
+}
+
+pub fn file_tree_panel_inner(area: Rect) -> Rect {
+    Block::bordered().inner(area)
 }
 
 pub fn file_tree_layout(area: Rect) -> FileTreeLayout {
