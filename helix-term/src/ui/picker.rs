@@ -156,7 +156,7 @@ fn inject_nucleo_item<T, D>(
     });
 }
 
-fn cached_file_preview_from_bytes(
+pub(crate) fn cached_file_preview_from_bytes(
     path: &Path,
     bytes: &[u8],
     file_len: u64,

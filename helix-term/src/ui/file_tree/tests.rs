@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use super::fs::{load_tree_entries, TreeLoadOptions};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
 use super::ops::{FileOperation, FileOperationService};
+use super::preview::{FileTreePreviewProvider, PreviewKind};
 
 fn path(path: &str) -> PathBuf {
     PathBuf::from(path)
@@ -159,4 +160,16 @@ fn copy_operation_refuses_to_overwrite_existing_file() {
 
     assert!(error.to_string().contains("already exists"));
     assert_eq!(std::fs::read_to_string(target).unwrap(), "target");
+}
+
+#[test]
+fn preview_provider_classifies_binary_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("asset.bin");
+    std::fs::write(&path, b"\0binary").unwrap();
+
+    let provider = FileTreePreviewProvider;
+    let preview = provider.preview_path(&path, None).unwrap();
+
+    assert_eq!(preview.kind(), PreviewKind::Binary);
 }
