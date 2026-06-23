@@ -11,8 +11,9 @@ use super::git::{parse_porcelain_status, GitBadge};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
 use super::ops::{FileOperation, FileOperationService};
 use super::preview::{FileTreePreviewProvider, PreviewKind};
-use super::render::{file_tree_layout, FileTreeLayout};
-use helix_view::graphics::Rect;
+use super::render::{file_tree_layout, render_tree_rows, FileTreeLayout};
+use helix_view::{graphics::Rect, theme::Style};
+use tui::buffer::Buffer as Surface;
 
 fn path(path: &str) -> PathBuf {
     PathBuf::from(path)
@@ -243,4 +244,35 @@ fn layout_uses_tree_only_when_narrow() {
     let layout = file_tree_layout(Rect::new(0, 0, 60, 40));
 
     assert!(matches!(layout, FileTreeLayout::TreeOnly { .. }));
+}
+
+fn rendered_line(surface: &Surface, y: u16, width: u16) -> String {
+    (0..width)
+        .map(|x| surface.get(x, y).unwrap().symbol.as_str())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+#[test]
+fn render_tree_rows_draws_directory_and_nested_file_labels() {
+    let entries = [
+        FileTreeEntry::new(path("/project/src"), FileTreeNodeKind::Directory, 0),
+        FileTreeEntry::new(path("/project/src/main.rs"), FileTreeNodeKind::File, 1),
+    ];
+    let rows: Vec<_> = entries.iter().collect();
+    let mut surface = Surface::empty(Rect::new(0, 0, 32, 2));
+
+    render_tree_rows(
+        &mut surface,
+        Rect::new(0, 0, 32, 2),
+        &rows,
+        0,
+        Style::default(),
+        Style::default(),
+        Style::default(),
+    );
+
+    assert_eq!(rendered_line(&surface, 0, 32), "▸ src");
+    assert_eq!(rendered_line(&surface, 1, 32), "    main.rs");
 }

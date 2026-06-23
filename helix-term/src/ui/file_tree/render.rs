@@ -1,4 +1,7 @@
-use helix_view::graphics::Rect;
+use helix_view::{graphics::Rect, theme::Style};
+use tui::buffer::Buffer as Surface;
+
+use super::model::{FileTreeEntry, FileTreeNodeKind};
 
 pub const MIN_WIDTH_FOR_TREE_PREVIEW: u16 = 90;
 
@@ -22,5 +25,39 @@ pub fn file_tree_layout(area: Rect) -> FileTreeLayout {
         }
     } else {
         FileTreeLayout::TreeOnly { tree: area }
+    }
+}
+
+pub fn render_tree_rows(
+    surface: &mut Surface,
+    area: Rect,
+    rows: &[&FileTreeEntry],
+    selected: usize,
+    text_style: Style,
+    selected_style: Style,
+    directory_style: Style,
+) {
+    for (row_index, entry) in rows.iter().take(area.height as usize).enumerate() {
+        let y = area.y + row_index as u16;
+        let style = if row_index == selected {
+            selected_style
+        } else if entry.is_dir() {
+            directory_style
+        } else {
+            text_style
+        };
+        let indent = "  ".repeat(entry.depth);
+        let marker = match entry.kind {
+            FileTreeNodeKind::Directory => "▸ ",
+            FileTreeNodeKind::File => "  ",
+            FileTreeNodeKind::Symlink => "↪ ",
+        };
+        let name = entry
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default();
+        let text = format!("{indent}{marker}{name}");
+        surface.set_stringn(area.x, y, &text, area.width as usize, style);
     }
 }

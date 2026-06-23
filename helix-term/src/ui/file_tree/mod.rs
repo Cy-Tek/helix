@@ -47,12 +47,58 @@ impl FileTree {
 }
 
 impl Component for FileTree {
-    fn handle_event(&mut self, _event: &Event, _ctx: &mut Context) -> EventResult {
-        EventResult::Ignored(None)
+    fn handle_event(&mut self, event: &Event, _ctx: &mut Context) -> EventResult {
+        let Event::Key(event) = event else {
+            return EventResult::Ignored(None);
+        };
+
+        match actions::action_for_key(*event) {
+            Some(actions::FileTreeAction::MoveDown) => {
+                self.model.select_next();
+                EventResult::Consumed(None)
+            }
+            Some(actions::FileTreeAction::MoveUp) => {
+                self.model.select_previous();
+                EventResult::Consumed(None)
+            }
+            Some(actions::FileTreeAction::ToggleMark) => {
+                self.model.toggle_mark_selected();
+                EventResult::Consumed(None)
+            }
+            Some(actions::FileTreeAction::ToggleHidden) => {
+                self.model.toggle_hidden();
+                self.refresh();
+                EventResult::Consumed(None)
+            }
+            Some(actions::FileTreeAction::Refresh) => {
+                self.refresh();
+                EventResult::Consumed(None)
+            }
+            Some(actions::FileTreeAction::Close) => {
+                EventResult::Consumed(Some(Box::new(|compositor, _| {
+                    compositor.remove(ID);
+                })))
+            }
+            _ => EventResult::Ignored(None),
+        }
     }
 
-    fn render(&mut self, area: Rect, surface: &mut Surface, _ctx: &mut Context) {
+    fn render(&mut self, area: Rect, surface: &mut Surface, ctx: &mut Context) {
         surface.clear_with(area, Default::default());
+        let layout = render::file_tree_layout(area);
+        let tree_area = match layout {
+            render::FileTreeLayout::TreeOnly { tree } => tree,
+            render::FileTreeLayout::TreeAndPreview { tree, .. } => tree,
+        };
+        render::render_tree_rows(
+            surface,
+            tree_area,
+            &self.model.visible_entries(),
+            self.model.selected_index(),
+            ctx.editor.theme.get("ui.text"),
+            ctx.editor.theme.get("ui.selection"),
+            ctx.editor.theme.get("ui.text.directory"),
+        );
     }
 
     fn cursor(

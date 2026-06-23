@@ -96,6 +96,10 @@ impl FileTreeModel {
             .map(|entry| entry.path.as_path())
     }
 
+    pub fn selected_index(&self) -> usize {
+        self.selected
+    }
+
     pub fn select_next(&mut self) {
         let max = self.visible_entries().len().saturating_sub(1);
         self.selected = (self.selected + 1).min(max);
