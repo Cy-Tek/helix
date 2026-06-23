@@ -274,6 +274,18 @@ impl Component for FileTree {
             Some(actions::FileTreeAction::Copy) => self.prompt_copy(ctx),
             Some(actions::FileTreeAction::Trash) => self.confirm_trash(ctx),
             Some(actions::FileTreeAction::ForceDelete) => self.confirm_force_delete(ctx),
+            Some(actions::FileTreeAction::ShowActions) => {
+                let lines = actions::action_labels()
+                    .into_iter()
+                    .map(|(_, label)| label)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let popup = super::Popup::new("file-tree-actions", super::Text::new(lines))
+                    .auto_close(true);
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(popup));
+                })))
+            }
             Some(actions::FileTreeAction::Close) => {
                 EventResult::Consumed(Some(Box::new(|compositor, _| {
                     compositor.remove(ID);

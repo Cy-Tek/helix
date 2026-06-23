@@ -249,6 +249,20 @@ fn maps_core_file_tree_keys_to_actions() {
 }
 
 #[test]
+fn action_labels_include_direct_and_destructive_actions() {
+    let labels: Vec<_> = super::actions::action_labels()
+        .into_iter()
+        .map(|(_, label)| label)
+        .collect();
+
+    assert!(labels.iter().any(|label| label.contains("trash")));
+    assert!(labels
+        .iter()
+        .any(|label| label.contains("permanently delete")));
+    assert!(labels.iter().any(|label| label.contains("create")));
+}
+
+#[test]
 fn layout_uses_preview_when_wide_enough() {
     let layout = file_tree_layout(Rect::new(0, 0, 120, 40));
 
