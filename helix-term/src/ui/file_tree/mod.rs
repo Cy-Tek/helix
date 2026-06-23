@@ -1,14 +1,16 @@
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::compositor::{Component, Context, Event, EventResult};
+use crate::job::Callback;
 use helix_view::graphics::{CursorKind, Rect};
 use tui::buffer::Buffer as Surface;
 
 use self::{
     fs::{load_tree_entries, TreeLoadOptions},
     model::FileTreeModel,
+    ops::{FileOperation, FileOperationError, FileOperationService},
 };
 
 pub mod actions;
@@ -29,6 +31,16 @@ pub struct FileTree {
     load_options: TreeLoadOptions,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum OperationPromptKind {
+    Create,
+    Rename,
+    Move,
+    Copy,
+    Trash,
+    ForceDelete,
+}
+
 impl FileTree {
     pub fn new(root: PathBuf) -> Self {
         let mut tree = Self {
@@ -44,10 +56,190 @@ impl FileTree {
             self.model.replace_entries(entries);
         }
     }
+
+    fn prompt_create(&self, cx: &mut Context) -> EventResult {
+        self.push_operation_prompt(cx, "create path: ", OperationPromptKind::Create)
+    }
+
+    fn prompt_rename(&self, cx: &mut Context) -> EventResult {
+        self.push_operation_prompt(cx, "rename to: ", OperationPromptKind::Rename)
+    }
+
+    fn prompt_move(&self, cx: &mut Context) -> EventResult {
+        self.push_operation_prompt(cx, "move to directory: ", OperationPromptKind::Move)
+    }
+
+    fn prompt_copy(&self, cx: &mut Context) -> EventResult {
+        self.push_operation_prompt(cx, "copy to directory: ", OperationPromptKind::Copy)
+    }
+
+    fn confirm_trash(&self, cx: &mut Context) -> EventResult {
+        self.push_operation_prompt(
+            cx,
+            "type trash to move selected paths to trash: ",
+            OperationPromptKind::Trash,
+        )
+    }
+
+    fn confirm_force_delete(&self, cx: &mut Context) -> EventResult {
+        self.push_operation_prompt(
+            cx,
+            "type delete to permanently delete selected paths: ",
+            OperationPromptKind::ForceDelete,
+        )
+    }
+
+    fn push_operation_prompt(
+        &self,
+        _cx: &mut Context,
+        label: &'static str,
+        kind: OperationPromptKind,
+    ) -> EventResult {
+        let root = self.model.root().to_path_buf();
+        let targets = self.model.operation_targets();
+        let prompt = super::Prompt::new(
+            label.into(),
+            None,
+            super::completers::none,
+            move |cx, input, event| {
+                if event != super::PromptEvent::Validate {
+                    return;
+                }
+
+                let operations = operations_from_prompt(kind, &root, &targets, input);
+                if operations.is_empty() {
+                    return;
+                }
+
+                if let Err(err) = execute_operations(operations) {
+                    cx.editor
+                        .set_error(format!("File tree operation failed: {err}"));
+                    return;
+                }
+
+                cx.jobs.callback(async move {
+                    let call = Callback::EditorCompositor(Box::new(|editor, compositor| {
+                        if let Some(tree) =
+                            compositor.find_id::<super::overlay::Overlay<FileTree>>(ID)
+                        {
+                            tree.content.model.clear_marks();
+                            tree.content.refresh();
+                        }
+                        editor.set_status("File tree operation complete");
+                    }));
+                    Ok(call)
+                });
+            },
+        );
+
+        EventResult::Consumed(Some(Box::new(move |compositor, _| {
+            compositor.push(Box::new(prompt));
+        })))
+    }
+}
+
+fn execute_operations(operations: Vec<FileOperation>) -> Result<(), FileOperationError> {
+    let service = FileOperationService;
+    for operation in operations {
+        service.execute(operation)?;
+    }
+    Ok(())
+}
+
+fn operations_from_prompt(
+    kind: OperationPromptKind,
+    root: &Path,
+    targets: &[PathBuf],
+    input: &str,
+) -> Vec<FileOperation> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    match kind {
+        OperationPromptKind::Create => {
+            let path = resolve_prompt_path(root, input);
+            if input.ends_with(std::path::MAIN_SEPARATOR) {
+                vec![FileOperation::CreateDirectory { path }]
+            } else {
+                vec![FileOperation::CreateFile { path }]
+            }
+        }
+        OperationPromptKind::Rename => targets
+            .first()
+            .map(|from| {
+                let to = resolve_rename_target(root, from, input);
+                FileOperation::Rename {
+                    from: from.clone(),
+                    to,
+                }
+            })
+            .into_iter()
+            .collect(),
+        OperationPromptKind::Move => move_or_copy_operations(targets, root, input, false),
+        OperationPromptKind::Copy => move_or_copy_operations(targets, root, input, true),
+        OperationPromptKind::Trash if input == "trash" && !targets.is_empty() => {
+            vec![FileOperation::Trash {
+                paths: targets.to_vec(),
+            }]
+        }
+        OperationPromptKind::ForceDelete if input == "delete" && !targets.is_empty() => {
+            vec![FileOperation::ForceDelete {
+                paths: targets.to_vec(),
+            }]
+        }
+        OperationPromptKind::Trash | OperationPromptKind::ForceDelete => Vec::new(),
+    }
+}
+
+fn move_or_copy_operations(
+    targets: &[PathBuf],
+    root: &Path,
+    input: &str,
+    copy: bool,
+) -> Vec<FileOperation> {
+    let directory = resolve_prompt_path(root, input);
+    targets
+        .iter()
+        .filter_map(|from| {
+            let name = from.file_name()?;
+            let to = directory.join(name);
+            Some(if copy {
+                FileOperation::Copy {
+                    from: from.clone(),
+                    to,
+                }
+            } else {
+                FileOperation::Move {
+                    from: from.clone(),
+                    to,
+                }
+            })
+        })
+        .collect()
+}
+
+fn resolve_rename_target(root: &Path, from: &Path, input: &str) -> PathBuf {
+    let target = PathBuf::from(input);
+    if target.is_absolute() {
+        target
+    } else {
+        from.parent().unwrap_or(root).join(target)
+    }
+}
+
+fn resolve_prompt_path(root: &Path, input: &str) -> PathBuf {
+    let path = PathBuf::from(input);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
 }
 
 impl Component for FileTree {
-    fn handle_event(&mut self, event: &Event, _ctx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         let Event::Key(event) = event else {
             return EventResult::Ignored(None);
         };
@@ -74,6 +266,12 @@ impl Component for FileTree {
                 self.refresh();
                 EventResult::Consumed(None)
             }
+            Some(actions::FileTreeAction::Create) => self.prompt_create(ctx),
+            Some(actions::FileTreeAction::Rename) => self.prompt_rename(ctx),
+            Some(actions::FileTreeAction::Move) => self.prompt_move(ctx),
+            Some(actions::FileTreeAction::Copy) => self.prompt_copy(ctx),
+            Some(actions::FileTreeAction::Trash) => self.confirm_trash(ctx),
+            Some(actions::FileTreeAction::ForceDelete) => self.confirm_force_delete(ctx),
             Some(actions::FileTreeAction::Close) => {
                 EventResult::Consumed(Some(Box::new(|compositor, _| {
                     compositor.remove(ID);

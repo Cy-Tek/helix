@@ -122,6 +122,17 @@ impl FileTreeModel {
         self.marked.iter().cloned().collect()
     }
 
+    pub fn operation_targets(&self) -> Vec<PathBuf> {
+        let marked = self.marked_paths();
+        if !marked.is_empty() {
+            return marked;
+        }
+        self.selected_path()
+            .map(Path::to_path_buf)
+            .into_iter()
+            .collect()
+    }
+
     pub fn clear_marks(&mut self) {
         self.marked.clear();
     }

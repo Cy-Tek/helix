@@ -61,6 +61,22 @@ fn marks_are_stable_when_selection_moves() {
 }
 
 #[test]
+fn operation_targets_use_marks_before_selection() {
+    let mut model = FileTreeModel::new(path("/project"));
+    model.replace_entries(vec![
+        FileTreeEntry::new(path("/project/a.rs"), FileTreeNodeKind::File, 0),
+        FileTreeEntry::new(path("/project/b.rs"), FileTreeNodeKind::File, 0),
+    ]);
+
+    assert_eq!(model.operation_targets(), vec![path("/project/a.rs")]);
+
+    model.toggle_mark_selected();
+    model.select_next();
+
+    assert_eq!(model.operation_targets(), vec![path("/project/a.rs")]);
+}
+
+#[test]
 fn reveal_expands_ancestors_and_selects_path() {
     let mut model = FileTreeModel::new(path("/project"));
     model.replace_entries(vec![
