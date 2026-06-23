@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::fs::{load_tree_entries, TreeLoadOptions};
+use super::git::{parse_porcelain_status, GitBadge};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
 use super::ops::{FileOperation, FileOperationService};
 use super::preview::{FileTreePreviewProvider, PreviewKind};
@@ -172,4 +173,17 @@ fn preview_provider_classifies_binary_files() {
     let preview = provider.preview_path(&path, None).unwrap();
 
     assert_eq!(preview.kind(), PreviewKind::Binary);
+}
+
+#[test]
+fn parses_porcelain_status_into_badges() {
+    let output = b" M src/main.rs\0?? assets/new.png\0A  Cargo.toml\0";
+    let badges = parse_porcelain_status(PathBuf::from("/project").as_path(), output);
+
+    assert_eq!(badges[&path("/project/src/main.rs")], GitBadge::Modified);
+    assert_eq!(
+        badges[&path("/project/assets/new.png")],
+        GitBadge::Untracked
+    );
+    assert_eq!(badges[&path("/project/Cargo.toml")], GitBadge::Added);
 }

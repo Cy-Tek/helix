@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod fs;
+pub mod git;
 pub mod model;
 pub mod ops;
 pub mod preview;

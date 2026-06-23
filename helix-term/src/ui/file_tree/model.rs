@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::git::GitBadge;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileTreeNodeKind {
     File,
@@ -15,15 +17,26 @@ pub struct FileTreeEntry {
     pub path: PathBuf,
     pub kind: FileTreeNodeKind,
     pub depth: usize,
+    pub git_badge: Option<GitBadge>,
 }
 
 impl FileTreeEntry {
     pub fn new(path: PathBuf, kind: FileTreeNodeKind, depth: usize) -> Self {
-        Self { path, kind, depth }
+        Self {
+            path,
+            kind,
+            depth,
+            git_badge: None,
+        }
     }
 
     pub fn is_dir(&self) -> bool {
         matches!(self.kind, FileTreeNodeKind::Directory)
+    }
+
+    pub fn with_git_badge(mut self, badge: Option<GitBadge>) -> Self {
+        self.git_badge = badge;
+        self
     }
 }
 
