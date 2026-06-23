@@ -46,6 +46,15 @@ impl FileTreePreviewProvider {
         path: &Path,
         cell_size_pixels: Option<(u16, u16)>,
     ) -> Option<FileTreePreview> {
+        self.preview_path_in(path, Rect::new(0, 0, 40, 20), cell_size_pixels)
+    }
+
+    pub fn preview_path_in(
+        &self,
+        path: &Path,
+        area: Rect,
+        cell_size_pixels: Option<(u16, u16)>,
+    ) -> Option<FileTreePreview> {
         let metadata = fs::metadata(path).ok()?;
         if metadata.is_dir() {
             return Some(FileTreePreview {
@@ -54,7 +63,6 @@ impl FileTreePreviewProvider {
         }
 
         let bytes = fs::read(path).ok()?;
-        let area = Rect::new(0, 0, 40, 20);
         cached_file_preview_from_bytes(path, &bytes, metadata.len(), area, cell_size_pixels)
             .map(|inner| FileTreePreview { inner })
     }

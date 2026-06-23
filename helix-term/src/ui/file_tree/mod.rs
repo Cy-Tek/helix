@@ -29,6 +29,7 @@ pub const ID: &str = "file-tree";
 pub struct FileTree {
     model: FileTreeModel,
     load_options: TreeLoadOptions,
+    preview_provider: preview::FileTreePreviewProvider,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +47,7 @@ impl FileTree {
         let mut tree = Self {
             model: FileTreeModel::new(root),
             load_options: TreeLoadOptions::default(),
+            preview_provider: preview::FileTreePreviewProvider,
         };
         tree.refresh();
         tree
@@ -286,7 +288,27 @@ impl Component for FileTree {
         let layout = render::file_tree_layout(area);
         let tree_area = match layout {
             render::FileTreeLayout::TreeOnly { tree } => tree,
-            render::FileTreeLayout::TreeAndPreview { tree, .. } => tree,
+            render::FileTreeLayout::TreeAndPreview { tree, preview } => {
+                if let Some(path) = self.model.selected_path() {
+                    let inner = super::preview::preview_content_area(preview);
+                    if let Some(file_preview) =
+                        self.preview_provider
+                            .preview_path_in(path, inner, ctx.cell_size_pixels)
+                    {
+                        let cached = file_preview.into_inner();
+                        super::preview::render_preview(
+                            crate::ui::picker::Preview::Cached(&cached),
+                            None,
+                            preview,
+                            surface,
+                            ctx.editor,
+                            ctx.supports_kitty_graphics,
+                            ctx.media,
+                        );
+                    }
+                }
+                tree
+            }
         };
         render::render_tree_rows(
             surface,

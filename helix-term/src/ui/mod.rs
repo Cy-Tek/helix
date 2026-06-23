@@ -10,6 +10,7 @@ pub mod menu;
 pub mod overlay;
 pub mod picker;
 pub mod popup;
+pub(crate) mod preview;
 pub mod prompt;
 mod select;
 mod spinner;

@@ -7,11 +7,8 @@ use crate::{
     ctrl, key, shift,
     ui::{
         self,
-        document::{render_document, LinePos, TextRenderer},
         image_preview::{self, ImagePreview},
         picker::query::PickerQuery,
-        text_decorations::DecorationManager,
-        EditorView,
     },
 };
 use futures_util::future::BoxFuture;
@@ -23,7 +20,6 @@ use tokio::sync::mpsc::Sender;
 use tui::{
     buffer::Buffer as Surface,
     layout::Constraint,
-    terminal::{MediaCommand, MediaImage},
     text::{Span, Spans},
     widgets::{Block, BorderType, Cell, Row, Table},
 };
@@ -43,14 +39,12 @@ use std::{
 
 use crate::ui::{Prompt, PromptEvent};
 use helix_core::{
-    char_idx_at_visual_offset, fuzzy::MATCHER, movement::Direction,
-    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position,
+    fuzzy::MATCHER, movement::Direction, unicode::segmentation::UnicodeSegmentation, Position,
 };
 use helix_view::{
     editor::Action,
-    graphics::{CursorKind, Margin, Modifier, Rect},
+    graphics::{CursorKind, Modifier, Rect},
     theme::Style,
-    view::ViewPosition,
     Document, DocumentId, Editor,
 };
 
@@ -61,7 +55,6 @@ pub const ID: &str = "picker";
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
-const PICKER_PREVIEW_IMAGE_ID: u32 = 1;
 
 #[derive(PartialEq, Eq, Hash)]
 pub enum PathOrId<'a> {
@@ -104,7 +97,7 @@ pub enum Preview<'picker, 'editor> {
 }
 
 impl Preview<'_, '_> {
-    fn document(&self) -> Option<&Document> {
+    pub(crate) fn document(&self) -> Option<&Document> {
         match self {
             Preview::EditorDocument(doc) => Some(doc),
             Preview::Cached(CachedPreview::Document(doc)) => Some(doc),
@@ -112,14 +105,14 @@ impl Preview<'_, '_> {
         }
     }
 
-    fn dir_content(&self) -> Option<&Vec<(String, bool)>> {
+    pub(crate) fn dir_content(&self) -> Option<&Vec<(String, bool)>> {
         match self {
             Preview::Cached(CachedPreview::Directory(dir_content)) => Some(dir_content),
             _ => None,
         }
     }
 
-    fn image(&self) -> Option<&ImagePreview> {
+    pub(crate) fn image(&self) -> Option<&ImagePreview> {
         match self {
             Preview::Cached(CachedPreview::Image(image)) => Some(image),
             _ => None,
@@ -127,7 +120,7 @@ impl Preview<'_, '_> {
     }
 
     /// Alternate text to show for the preview.
-    fn placeholder(&self) -> &str {
+    pub(crate) fn placeholder(&self) -> &str {
         match *self {
             Self::EditorDocument(_) => "<Invalid file location>",
             Self::Cached(preview) => match preview {
@@ -949,163 +942,16 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     }
 
     fn render_preview(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // -- Render the frame:
-        // clear area
-        let background = cx.editor.theme.get("ui.background");
-        let text = cx.editor.theme.get("ui.text");
-        let directory = cx.editor.theme.get("ui.text.directory");
-        surface.clear_with(area, background);
-
-        const BLOCK: Block<'_> = Block::bordered();
-
-        // calculate the inner area inside the box
-        let inner = BLOCK.inner(area);
-        // 1 column gap on either side
-        let margin = Margin::horizontal(1);
-        let inner = inner.inner(margin);
-        BLOCK.render(area, surface);
-
+        let inner = ui::preview::preview_content_area(area);
         if let Some((preview, range)) = self.get_preview(cx.editor, inner, cx.cell_size_pixels) {
-            if let Some(image) = preview.image() {
-                if cx.supports_kitty_graphics {
-                    cx.media.push(MediaCommand::Image(MediaImage {
-                        id: PICKER_PREVIEW_IMAGE_ID,
-                        area: image.area,
-                        width: image.width,
-                        height: image.height,
-                        payload_hash: image.payload_hash,
-                        png: image.png.clone(),
-                    }));
-                } else {
-                    let alt_text = "<Image preview unavailable>";
-                    let x = inner.x + inner.width.saturating_sub(alt_text.len() as u16) / 2;
-                    let y = inner.y + inner.height / 2;
-                    surface.set_stringn(x, y, alt_text, inner.width as usize, text);
-                }
-                return;
-            }
-
-            let doc = match preview.document() {
-                Some(doc)
-                    if range.is_none_or(|(start, end)| {
-                        start <= end && end <= doc.text().len_lines()
-                    }) =>
-                {
-                    doc
-                }
-                _ => {
-                    if let Some(dir_content) = preview.dir_content() {
-                        for (i, (path, is_dir)) in
-                            dir_content.iter().take(inner.height as usize).enumerate()
-                        {
-                            let style = if *is_dir { directory } else { text };
-                            surface.set_stringn(
-                                inner.x,
-                                inner.y + i as u16,
-                                path,
-                                inner.width as usize,
-                                style,
-                            );
-                        }
-                        return;
-                    }
-
-                    let alt_text = preview.placeholder();
-                    let x = inner.x + inner.width.saturating_sub(alt_text.len() as u16) / 2;
-                    let y = inner.y + inner.height / 2;
-                    surface.set_stringn(x, y, alt_text, inner.width as usize, text);
-                    return;
-                }
-            };
-
-            let mut offset = ViewPosition::default();
-            if let Some((start_line, end_line)) = range {
-                let height = end_line - start_line;
-                let text = doc.text().slice(..);
-                let start = text.line_to_char(start_line);
-                let middle = text.line_to_char(start_line + height / 2);
-                if height < inner.height as usize {
-                    let text_fmt = doc.text_format(inner.width, None);
-                    let annotations = TextAnnotations::default();
-                    (offset.anchor, offset.vertical_offset) = char_idx_at_visual_offset(
-                        text,
-                        middle,
-                        // align to middle
-                        -(inner.height as isize / 2),
-                        0,
-                        &text_fmt,
-                        &annotations,
-                    );
-                    if start < offset.anchor {
-                        offset.anchor = start;
-                        offset.vertical_offset = 0;
-                    }
-                } else {
-                    offset.anchor = start;
-                }
-            }
-
-            let loader = cx.editor.syn_loader.load();
-            let config = cx.editor.config();
-
-            let syntax_highlighter =
-                EditorView::doc_syntax_highlighter(doc, offset.anchor, area.height, &loader);
-            let mut overlay_highlights = Vec::new();
-            if doc
-                .language_config()
-                .and_then(|config| config.rainbow_brackets)
-                .unwrap_or(config.rainbow_brackets)
-            {
-                if let Some(overlay) = EditorView::doc_rainbow_highlights(
-                    doc,
-                    offset.anchor,
-                    area.height,
-                    &cx.editor.theme,
-                    &loader,
-                ) {
-                    overlay_highlights.push(overlay);
-                }
-            }
-
-            EditorView::doc_diagnostics_highlights_into(
-                doc,
-                &cx.editor.theme,
-                &mut overlay_highlights,
-            );
-
-            let mut decorations = DecorationManager::default();
-
-            if let Some((start, end)) = range {
-                let style = cx
-                    .editor
-                    .theme
-                    .try_get("ui.highlight")
-                    .unwrap_or_else(|| cx.editor.theme.get("ui.selection"));
-                let draw_highlight = move |renderer: &mut TextRenderer, pos: LinePos| {
-                    if (start..=end).contains(&pos.doc_line) {
-                        let area = Rect::new(
-                            renderer.viewport.x,
-                            pos.visual_line,
-                            renderer.viewport.width,
-                            1,
-                        );
-                        renderer.set_style(area, style)
-                    }
-                };
-                decorations.add_decoration(draw_highlight);
-            }
-
-            render_document(
+            ui::preview::render_preview(
+                preview,
+                range,
+                area,
                 surface,
-                inner,
-                doc,
-                offset,
-                // TODO: compute text annotations asynchronously here (like inlay hints)
-                &TextAnnotations::default(),
-                syntax_highlighter,
-                overlay_highlights,
-                &cx.editor.theme,
-                decorations,
+                cx.editor,
+                cx.supports_kitty_graphics,
+                cx.media,
             );
         }
     }
