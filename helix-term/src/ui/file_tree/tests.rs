@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use super::fs::{load_tree_entries, TreeLoadOptions};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
 
 fn path(path: &str) -> PathBuf {
@@ -70,4 +71,54 @@ fn reveal_expands_ancestors_and_selects_path() {
         model.selected_path(),
         Some(path("/project/src/ui/tree.rs").as_path())
     );
+}
+
+#[test]
+fn loader_sorts_directories_before_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+
+    let entries = load_tree_entries(dir.path(), &TreeLoadOptions::default()).unwrap();
+    let names: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+
+    assert_eq!(names, vec!["src", "Cargo.toml", "README.md"]);
+}
+
+#[test]
+fn loader_respects_hidden_toggle() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".env"), "").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "").unwrap();
+
+    let hidden_off = load_tree_entries(
+        dir.path(),
+        &TreeLoadOptions {
+            show_hidden: false,
+            ..TreeLoadOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(hidden_off.len(), 1);
+
+    let hidden_on = load_tree_entries(
+        dir.path(),
+        &TreeLoadOptions {
+            show_hidden: true,
+            ..TreeLoadOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(hidden_on.len(), 2);
 }
