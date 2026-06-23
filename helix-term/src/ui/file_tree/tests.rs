@@ -11,6 +11,8 @@ use super::git::{parse_porcelain_status, GitBadge};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
 use super::ops::{FileOperation, FileOperationService};
 use super::preview::{FileTreePreviewProvider, PreviewKind};
+use super::render::{file_tree_layout, FileTreeLayout};
+use helix_view::graphics::Rect;
 
 fn path(path: &str) -> PathBuf {
     PathBuf::from(path)
@@ -227,4 +229,18 @@ fn maps_core_file_tree_keys_to_actions() {
         action_for_key(key(KeyCode::Char('?'))),
         Some(FileTreeAction::ShowActions)
     );
+}
+
+#[test]
+fn layout_uses_preview_when_wide_enough() {
+    let layout = file_tree_layout(Rect::new(0, 0, 120, 40));
+
+    assert!(matches!(layout, FileTreeLayout::TreeAndPreview { .. }));
+}
+
+#[test]
+fn layout_uses_tree_only_when_narrow() {
+    let layout = file_tree_layout(Rect::new(0, 0, 60, 40));
+
+    assert!(matches!(layout, FileTreeLayout::TreeOnly { .. }));
 }
