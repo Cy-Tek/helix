@@ -245,6 +245,8 @@ In addition to the options for the file picker and global search, a similar set 
 
 Note that the ignore files consulted by the file explorer when `ignore` is set to true are the same ones used by the file picker, including the aforementioned Helix-specific ignore files.
 
+The file explorer opens a modal tree manager rooted at the active project by default. It supports navigation, preview, marks, create, rename, move, copy, trash, and permanent delete actions. Normal delete moves files to the system trash when `delete-to-trash = true`.
+
 
 | Key | Description | Default |
 |--|--|---------|
@@ -256,6 +258,9 @@ Note that the ignore files consulted by the file explorer when `ignore` is set t
 |`git-global` | Enables reading global `.gitignore`, whose path is specified in git's config: `core.excludesfile` option | `false`
 |`git-exclude` | Enables reading `.git/info/exclude` files | `false`
 |`flatten-dirs` | Enables flattening single child directories | `true`
+|`preview` | Shows a preview pane in the file tree when the terminal is wide enough | `true`
+|`git-status` | Shows lightweight git status badges in the file tree | `true`
+|`delete-to-trash` | Moves paths to the system trash for normal delete actions | `true`
 
 ### `[editor.buffer-picker]` Section
 

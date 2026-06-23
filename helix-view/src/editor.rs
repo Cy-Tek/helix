@@ -250,6 +250,12 @@ pub struct FileExplorerConfig {
     pub git_exclude: bool,
     /// Whether to flatten single-child directories in file explorer. Defaults to true.
     pub flatten_dirs: bool,
+    /// Whether to show a preview pane in the file tree when the terminal is wide enough. Defaults to true.
+    pub preview: bool,
+    /// Whether to show lightweight git status badges in the file tree. Defaults to true.
+    pub git_status: bool,
+    /// Whether normal delete moves paths to trash instead of permanently deleting. Defaults to true.
+    pub delete_to_trash: bool,
 }
 
 impl Default for FileExplorerConfig {
@@ -263,6 +269,9 @@ impl Default for FileExplorerConfig {
             git_global: false,
             git_exclude: false,
             flatten_dirs: true,
+            preview: true,
+            git_status: true,
+            delete_to_trash: true,
         }
     }
 }
@@ -2792,6 +2801,23 @@ mod tests {
             insecure: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn parses_file_explorer_tree_options() {
+        let config = toml::from_str::<Config>(
+            r#"
+            [file-explorer]
+            preview = false
+            git-status = false
+            delete-to-trash = true
+        "#,
+        )
+        .unwrap();
+
+        assert!(!config.file_explorer.preview);
+        assert!(!config.file_explorer.git_status);
+        assert!(config.file_explorer.delete_to_trash);
     }
 
     fn test_syntax_loader() -> syntax::Loader {
