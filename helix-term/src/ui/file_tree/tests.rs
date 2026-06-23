@@ -1,5 +1,11 @@
 use std::path::PathBuf;
 
+use helix_view::{
+    input::KeyEvent,
+    keyboard::{KeyCode, KeyModifiers},
+};
+
+use super::actions::{action_for_key, FileTreeAction};
 use super::fs::{load_tree_entries, TreeLoadOptions};
 use super::git::{parse_porcelain_status, GitBadge};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
@@ -186,4 +192,39 @@ fn parses_porcelain_status_into_badges() {
         GitBadge::Untracked
     );
     assert_eq!(badges[&path("/project/Cargo.toml")], GitBadge::Added);
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn maps_core_file_tree_keys_to_actions() {
+    assert_eq!(
+        action_for_key(key(KeyCode::Char('a'))),
+        Some(FileTreeAction::Create)
+    );
+    assert_eq!(
+        action_for_key(key(KeyCode::Char('r'))),
+        Some(FileTreeAction::Rename)
+    );
+    assert_eq!(
+        action_for_key(key(KeyCode::Char('d'))),
+        Some(FileTreeAction::Trash)
+    );
+    assert_eq!(
+        action_for_key(key(KeyCode::Char('D'))),
+        Some(FileTreeAction::ForceDelete)
+    );
+    assert_eq!(
+        action_for_key(key(KeyCode::Char(' '))),
+        Some(FileTreeAction::ToggleMark)
+    );
+    assert_eq!(
+        action_for_key(key(KeyCode::Char('?'))),
+        Some(FileTreeAction::ShowActions)
+    );
 }
