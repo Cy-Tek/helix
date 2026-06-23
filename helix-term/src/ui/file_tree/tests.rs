@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use super::fs::{load_tree_entries, TreeLoadOptions};
 use super::model::{FileTreeEntry, FileTreeModel, FileTreeNodeKind};
+use super::ops::{FileOperation, FileOperationService};
 
 fn path(path: &str) -> PathBuf {
     PathBuf::from(path)
@@ -121,4 +122,41 @@ fn loader_respects_hidden_toggle() {
     )
     .unwrap();
     assert_eq!(hidden_on.len(), 2);
+}
+
+#[test]
+fn rename_operation_moves_file_to_new_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old.rs");
+    let new = dir.path().join("new.rs");
+    std::fs::write(&old, "fn main() {}\n").unwrap();
+
+    FileOperationService::default()
+        .execute(FileOperation::Rename {
+            from: old.clone(),
+            to: new.clone(),
+        })
+        .unwrap();
+
+    assert!(!old.exists());
+    assert_eq!(std::fs::read_to_string(new).unwrap(), "fn main() {}\n");
+}
+
+#[test]
+fn copy_operation_refuses_to_overwrite_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.rs");
+    let target = dir.path().join("target.rs");
+    std::fs::write(&source, "source").unwrap();
+    std::fs::write(&target, "target").unwrap();
+
+    let error = FileOperationService::default()
+        .execute(FileOperation::Copy {
+            from: source,
+            to: target.clone(),
+        })
+        .unwrap_err();
+
+    assert!(error.to_string().contains("already exists"));
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "target");
 }
