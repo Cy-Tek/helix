@@ -1,6 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use arc_swap::{access::DynAccess, ArcSwap};
+use helix_core::syntax;
 use helix_view::{
+    editor::Config as EditorConfig,
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
 };
@@ -17,6 +21,11 @@ use tui::buffer::Buffer as Surface;
 
 fn path(path: &str) -> PathBuf {
     PathBuf::from(path)
+}
+
+fn test_syntax_loader() -> syntax::Loader {
+    let config = helix_loader::config::default_lang_config();
+    syntax::Loader::new(config.try_into().unwrap()).unwrap()
 }
 
 #[test]
@@ -43,6 +52,23 @@ fn expanding_a_directory_reveals_children_after_parent() {
             path("/project/README.md")
         ]
     );
+}
+
+#[test]
+fn toggling_expanded_directory_hides_children_again() {
+    let mut model = FileTreeModel::new(path("/project"));
+    model.replace_entries(vec![
+        FileTreeEntry::new(path("/project/src"), FileTreeNodeKind::Directory, 0),
+        FileTreeEntry::new(path("/project/src/main.rs"), FileTreeNodeKind::File, 1),
+    ]);
+
+    model.toggle_expanded(&path("/project/src"));
+    assert!(model.is_expanded(&path("/project/src")));
+
+    model.toggle_expanded(&path("/project/src"));
+
+    assert!(!model.is_expanded(&path("/project/src")));
+    assert_eq!(model.visible_paths(), vec![path("/project/src")]);
 }
 
 #[test]
@@ -125,6 +151,25 @@ fn loader_sorts_directories_before_files() {
 }
 
 #[test]
+fn loaded_tree_keeps_descendants_visible_under_expanded_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::create_dir_all(dir.path().join("test")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+
+    let entries = load_tree_entries(dir.path(), &TreeLoadOptions::default()).unwrap();
+    let src = dir.path().join("src");
+    let main = dir.path().join("src/main.rs");
+    let test = dir.path().join("test");
+    let mut model = FileTreeModel::new(dir.path().to_path_buf());
+    model.replace_entries(entries);
+
+    model.toggle_expanded(&src);
+
+    assert_eq!(model.visible_paths(), vec![src, main, test]);
+}
+
+#[test]
 fn loader_respects_hidden_toggle() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(".env"), "").unwrap();
@@ -198,6 +243,23 @@ fn preview_provider_classifies_binary_files() {
     let preview = provider.preview_path(&path, None).unwrap();
 
     assert_eq!(preview.kind(), PreviewKind::Binary);
+}
+
+#[test]
+fn preview_provider_classifies_text_files_as_documents() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("README.md");
+    std::fs::write(&path, "hello from preview\n").unwrap();
+    let config: Arc<dyn DynAccess<EditorConfig>> =
+        Arc::new(ArcSwap::from_pointee(EditorConfig::default()));
+    let syn_loader = Arc::new(ArcSwap::from_pointee(test_syntax_loader()));
+
+    let provider = FileTreePreviewProvider;
+    let preview = provider
+        .preview_path_with_loaders(&path, Rect::new(0, 0, 40, 20), None, config, syn_loader)
+        .unwrap();
+
+    assert_eq!(preview.kind(), PreviewKind::Document);
 }
 
 #[test]
@@ -298,11 +360,12 @@ fn render_tree_rows_draws_directory_and_nested_file_labels() {
         Rect::new(0, 0, 32, 2),
         &rows,
         0,
+        |candidate| candidate == path("/project/src").as_path(),
         Style::default(),
         Style::default(),
         Style::default(),
     );
 
-    assert_eq!(rendered_line(&surface, 0, 32), "▸ src");
+    assert_eq!(rendered_line(&surface, 0, 32), "▾ src");
     assert_eq!(rendered_line(&surface, 1, 32), "    main.rs");
 }

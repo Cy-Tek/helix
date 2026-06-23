@@ -1,8 +1,11 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Arc};
 
+use arc_swap::{access::DynAccess, ArcSwap};
+use helix_core::syntax;
 use helix_view::graphics::Rect;
+use helix_view::{editor::Config as EditorConfig, Document};
 
-use crate::ui::picker::{cached_file_preview_from_bytes, CachedPreview};
+use crate::ui::picker::{cached_file_preview_from_bytes, CachedPreview, MAX_FILE_SIZE_FOR_PREVIEW};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewKind {
@@ -65,5 +68,56 @@ impl FileTreePreviewProvider {
         let bytes = fs::read(path).ok()?;
         cached_file_preview_from_bytes(path, &bytes, metadata.len(), area, cell_size_pixels)
             .map(|inner| FileTreePreview { inner })
+    }
+
+    pub fn preview_path_with_loaders(
+        &self,
+        path: &Path,
+        area: Rect,
+        cell_size_pixels: Option<(u16, u16)>,
+        config: Arc<dyn DynAccess<EditorConfig>>,
+        syn_loader: Arc<ArcSwap<syntax::Loader>>,
+    ) -> Option<FileTreePreview> {
+        let metadata = fs::metadata(path).ok()?;
+        if metadata.is_dir() {
+            let mut entries = fs::read_dir(path)
+                .ok()?
+                .filter_map(Result::ok)
+                .map(|entry| {
+                    let is_dir = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
+                    let mut name = entry.file_name().to_string_lossy().into_owned();
+                    if is_dir {
+                        name.push('/');
+                    }
+                    (name, is_dir)
+                })
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|(name, is_dir)| (!*is_dir, name.to_ascii_lowercase()));
+            return Some(FileTreePreview {
+                inner: CachedPreview::Directory(entries),
+            });
+        }
+
+        if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
+            return Some(FileTreePreview {
+                inner: CachedPreview::LargeFile,
+            });
+        }
+
+        let bytes = fs::read(path).ok()?;
+        if let Some(inner) =
+            cached_file_preview_from_bytes(path, &bytes, metadata.len(), area, cell_size_pixels)
+        {
+            return Some(FileTreePreview { inner });
+        }
+
+        let mut doc = Document::open(path, None, false, config, syn_loader.clone()).ok()?;
+        let loader = syn_loader.load();
+        if let Some(language_config) = doc.detect_language_config(&loader) {
+            doc.language = Some(language_config);
+        }
+        Some(FileTreePreview {
+            inner: CachedPreview::Document(Box::new(doc)),
+        })
     }
 }

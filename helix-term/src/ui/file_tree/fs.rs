@@ -80,7 +80,7 @@ fn sort_key(root: &Path, entry: &FileTreeEntry) -> (Vec<(usize, String)>, usize)
         .enumerate()
         .map(|(index, component)| {
             let is_last = index + 1 == entry.depth + 1;
-            let kind_order = if is_last && entry.is_dir() { 0 } else { 1 };
+            let kind_order = if !is_last || entry.is_dir() { 0 } else { 1 };
             (
                 kind_order,
                 component.as_os_str().to_string_lossy().to_ascii_lowercase(),

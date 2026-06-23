@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 use crate::compositor::{Component, Context, Event, EventResult};
 use crate::job::Callback;
-use helix_view::graphics::{CursorKind, Rect};
+use helix_view::{
+    editor::Action,
+    graphics::{CursorKind, Rect},
+};
 use tui::buffer::Buffer as Surface;
 
 use self::{
@@ -138,6 +141,42 @@ impl FileTree {
             compositor.push(Box::new(prompt));
         })))
     }
+
+    fn collapse_selected(&mut self) -> EventResult {
+        let Some(entry) = self.model.selected_entry().cloned() else {
+            return EventResult::Consumed(None);
+        };
+        if entry.is_dir() && self.model.is_expanded(&entry.path) {
+            self.model.toggle_expanded(&entry.path);
+        }
+        EventResult::Consumed(None)
+    }
+
+    fn expand_or_open_selected(&mut self, ctx: &mut Context) -> EventResult {
+        let Some(entry) = self.model.selected_entry().cloned() else {
+            return EventResult::Consumed(None);
+        };
+
+        if entry.is_dir() {
+            if !self.model.is_expanded(&entry.path) {
+                self.model.toggle_expanded(&entry.path);
+            }
+            return EventResult::Consumed(None);
+        }
+
+        match ctx.editor.open(&entry.path, Action::Replace) {
+            Ok(_) => EventResult::Consumed(Some(Box::new(|compositor, _| {
+                compositor.remove(ID);
+            }))),
+            Err(err) => {
+                ctx.editor.set_error(format!(
+                    "Failed to open file '{}': {err}",
+                    entry.path.display()
+                ));
+                EventResult::Consumed(None)
+            }
+        }
+    }
 }
 
 fn execute_operations(operations: Vec<FileOperation>) -> Result<(), FileOperationError> {
@@ -259,6 +298,14 @@ impl Component for FileTree {
                 self.model.toggle_mark_selected();
                 EventResult::Consumed(None)
             }
+            Some(actions::FileTreeAction::Collapse) => self.collapse_selected(),
+            Some(actions::FileTreeAction::ExpandOrOpen) | Some(actions::FileTreeAction::Open) => {
+                self.expand_or_open_selected(ctx)
+            }
+            Some(actions::FileTreeAction::ClearMarks) => {
+                self.model.clear_marks();
+                EventResult::Consumed(None)
+            }
             Some(actions::FileTreeAction::ToggleHidden) => {
                 self.model.toggle_hidden();
                 self.refresh();
@@ -296,16 +343,31 @@ impl Component for FileTree {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, ctx: &mut Context) {
-        surface.clear_with(area, Default::default());
+        surface.clear_with(area, ctx.editor.theme.get("ui.background"));
         let layout = render::file_tree_layout(area);
         let tree_area = match layout {
             render::FileTreeLayout::TreeOnly { tree } => tree,
             render::FileTreeLayout::TreeAndPreview { tree, preview } => {
                 if let Some(path) = self.model.selected_path() {
                     let inner = super::preview::preview_content_area(preview);
-                    if let Some(file_preview) =
-                        self.preview_provider
-                            .preview_path_in(path, inner, ctx.cell_size_pixels)
+                    if let Some(doc) = ctx.editor.document_by_path(path) {
+                        super::preview::render_preview(
+                            crate::ui::picker::Preview::EditorDocument(doc),
+                            None,
+                            preview,
+                            surface,
+                            ctx.editor,
+                            ctx.supports_kitty_graphics,
+                            ctx.media,
+                        );
+                    } else if let Some(file_preview) =
+                        self.preview_provider.preview_path_with_loaders(
+                            path,
+                            inner,
+                            ctx.cell_size_pixels,
+                            ctx.editor.config.clone(),
+                            ctx.editor.syn_loader.clone(),
+                        )
                     {
                         let cached = file_preview.into_inner();
                         super::preview::render_preview(
@@ -322,11 +384,13 @@ impl Component for FileTree {
                 tree
             }
         };
+        let rows = self.model.visible_entries();
         render::render_tree_rows(
             surface,
             tree_area,
-            &self.model.visible_entries(),
+            &rows,
             self.model.selected_index(),
+            |path| self.model.is_expanded(path),
             ctx.editor.theme.get("ui.text"),
             ctx.editor.theme.get("ui.selection"),
             ctx.editor.theme.get("ui.text.directory"),

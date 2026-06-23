@@ -96,6 +96,10 @@ impl FileTreeModel {
             .map(|entry| entry.path.as_path())
     }
 
+    pub fn selected_entry(&self) -> Option<&FileTreeEntry> {
+        self.visible_entries().get(self.selected).copied()
+    }
+
     pub fn selected_index(&self) -> usize {
         self.selected
     }
@@ -141,6 +145,10 @@ impl FileTreeModel {
         if !self.expanded.insert(path.to_path_buf()) {
             self.expanded.remove(path);
         }
+    }
+
+    pub fn is_expanded(&self, path: &Path) -> bool {
+        self.expanded.contains(path)
     }
 
     pub fn reveal_path(&mut self, path: &Path) -> bool {

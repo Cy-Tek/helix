@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use helix_view::{graphics::Rect, theme::Style};
 use tui::buffer::Buffer as Surface;
 
@@ -33,6 +35,7 @@ pub fn render_tree_rows(
     area: Rect,
     rows: &[&FileTreeEntry],
     selected: usize,
+    is_expanded: impl Fn(&Path) -> bool,
     text_style: Style,
     selected_style: Style,
     directory_style: Style,
@@ -48,6 +51,7 @@ pub fn render_tree_rows(
         };
         let indent = "  ".repeat(entry.depth);
         let marker = match entry.kind {
+            FileTreeNodeKind::Directory if is_expanded(&entry.path) => "▾ ",
             FileTreeNodeKind::Directory => "▸ ",
             FileTreeNodeKind::File => "  ",
             FileTreeNodeKind::Symlink => "↪ ",
