@@ -58,6 +58,7 @@ impl FileTree {
     }
 
     fn refresh(&mut self) {
+        self.load_options.show_hidden = self.model.show_hidden();
         if let Ok(entries) = load_tree_entries(self.model.root(), &self.load_options) {
             self.model.replace_entries(entries);
         }

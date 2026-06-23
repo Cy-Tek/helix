@@ -197,6 +197,24 @@ fn loader_respects_hidden_toggle() {
 }
 
 #[test]
+fn refreshing_after_hidden_toggle_loads_hidden_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join(".env");
+    let visible = dir.path().join("main.rs");
+    std::fs::write(&hidden, "").unwrap();
+    std::fs::write(&visible, "").unwrap();
+
+    let mut tree = super::FileTree::new(dir.path().to_path_buf());
+
+    assert_eq!(tree.model.visible_paths(), vec![visible.clone()]);
+
+    tree.model.toggle_hidden();
+    tree.refresh();
+
+    assert_eq!(tree.model.visible_paths(), vec![hidden, visible]);
+}
+
+#[test]
 fn rename_operation_moves_file_to_new_name() {
     let dir = tempfile::tempdir().unwrap();
     let old = dir.path().join("old.rs");
