@@ -810,7 +810,7 @@ impl EditorView {
     fn render_capsule_titlebar(editor: &Editor, viewport: Rect, surface: &mut Surface) {
         let base_style = editor
             .theme
-            .try_get("ui.statusline.capsule")
+            .try_get_exact("ui.statusline.capsule")
             .or_else(|| editor.theme.try_get("ui.bufferline.background"))
             .unwrap_or_else(|| editor.theme.get("ui.statusline"));
         surface.clear_with(viewport, base_style);
@@ -843,25 +843,25 @@ impl EditorView {
         let glyphs = statusline::capsule_glyphs(editor.config().statusline.glyphs);
         let accent_style = editor
             .theme
-            .try_get("ui.statusline.capsule.accent")
+            .try_get_exact("ui.statusline.capsule.accent")
             .or_else(|| editor.theme.try_get("ui.text.focus"))
             .or_else(|| editor.theme.try_get("ui.statusline.normal"))
             .unwrap_or(base_style);
         let project_style = editor
             .theme
-            .try_get("ui.statusline.capsule.project")
+            .try_get_exact("ui.statusline.capsule.project")
             .unwrap_or_else(|| {
                 capsule_titlebar_segment_style(base_style, editor.theme.get("ui.statusline.normal"))
             });
         let file_style = editor
             .theme
-            .try_get("ui.statusline.capsule.file")
+            .try_get_exact("ui.statusline.capsule.file")
             .unwrap_or_else(|| {
                 capsule_titlebar_segment_style(base_style, editor.theme.get("ui.statusline.insert"))
             });
         let meta_style = editor
             .theme
-            .try_get("ui.statusline.capsule.meta")
+            .try_get_exact("ui.statusline.capsule.meta")
             .unwrap_or_else(|| {
                 capsule_titlebar_segment_style(base_style, editor.theme.get("ui.statusline.select"))
             });

@@ -6,7 +6,7 @@ use helix_view::editor::{StatusLineGlyphs, StatusLineStyle};
 use helix_view::{
     document::{Mode, SCRATCH_BUFFER_NAME},
     graphics::{Color, Rect},
-    theme::Style,
+    theme::{Style, Theme},
     Document, Editor, View,
 };
 
@@ -202,7 +202,7 @@ fn render_capsule(context: &mut RenderContext, viewport: Rect, surface: &mut Sur
         context
             .editor
             .theme
-            .try_get("ui.statusline.capsule")
+            .try_get_exact("ui.statusline.capsule")
             .unwrap_or_else(|| context.editor.theme.get("ui.statusline"))
     } else {
         context.editor.theme.get("ui.statusline.inactive")
@@ -336,11 +336,22 @@ fn capsule_style(
     fallback: Style,
     accent: Style,
 ) -> Style {
-    context
-        .editor
-        .theme
-        .try_get(key)
+    capsule_style_from_theme(&context.editor.theme, key, line_style, fallback, accent)
+}
+
+fn capsule_style_from_theme(
+    theme: &Theme,
+    key: &str,
+    line_style: Style,
+    fallback: Style,
+    accent: Style,
+) -> Style {
+    capsule_theme_style(theme, key)
         .unwrap_or_else(|| capsule_contrast_style(line_style, fallback, accent))
+}
+
+pub(super) fn capsule_theme_style(theme: &Theme, key: &str) -> Option<Style> {
+    theme.try_get_exact(key)
 }
 
 fn capsule_mode_style(context: &RenderContext, line_style: Style) -> Style {
@@ -412,11 +423,8 @@ fn capsule_meta_style(context: &RenderContext, line_style: Style) -> Style {
 }
 
 fn capsule_accent_style(context: &RenderContext, line_style: Style) -> Style {
-    context
-        .editor
-        .theme
-        .try_get("ui.statusline.capsule.accent")
-        .unwrap_or_else(|| {
+    capsule_theme_style(&context.editor.theme, "ui.statusline.capsule.accent").unwrap_or_else(
+        || {
             first_theme_style(
                 context.editor,
                 &[
@@ -426,7 +434,8 @@ fn capsule_accent_style(context: &RenderContext, line_style: Style) -> Style {
                 ],
                 line_style,
             )
-        })
+        },
+    )
 }
 
 pub(super) fn capsule_contrast_style(line_style: Style, fallback: Style, accent: Style) -> Style {
@@ -1014,5 +1023,29 @@ mod tests {
 
         assert_eq!(style.bg, Some(Color::Blue));
         assert_eq!(style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn capsule_theme_style_requires_exact_capsule_keys() {
+        let theme = toml::from_str::<Theme>(
+            r##"
+            "ui.statusline" = { fg = "#ffffff", bg = "#000000" }
+            "ui.statusline.normal" = { fg = "#000000", bg = "#0000ff" }
+            "##,
+        )
+        .unwrap();
+
+        assert!(theme.try_get("ui.statusline.capsule.mode").is_some());
+        assert!(capsule_theme_style(&theme, "ui.statusline.capsule.mode").is_none());
+
+        let style = capsule_style_from_theme(
+            &theme,
+            "ui.statusline.capsule.mode",
+            theme.get("ui.statusline"),
+            theme.get("ui.statusline.normal"),
+            theme.get("ui.statusline.normal"),
+        );
+
+        assert_eq!(style, theme.get("ui.statusline.normal"));
     }
 }
