@@ -829,12 +829,20 @@ impl EditorView {
         let accent_style = editor
             .theme
             .try_get("ui.statusline.capsule.accent")
-            .unwrap_or_else(|| editor.theme.get("ui.statusline.separator"));
+            .or_else(|| editor.theme.try_get("ui.text.focus"))
+            .or_else(|| editor.theme.try_get("ui.statusline.normal"))
+            .unwrap_or(base_style);
+        let project_fallback = editor
+            .theme
+            .try_get("ui.statusline.normal")
+            .or_else(|| editor.theme.try_get("ui.text.focus"))
+            .unwrap_or(base_style);
         let project_style = editor
             .theme
             .try_get("ui.statusline.capsule.project")
-            .or_else(|| editor.theme.try_get("ui.statusline.active"))
-            .unwrap_or(base_style)
+            .unwrap_or_else(|| {
+                statusline::capsule_contrast_style(base_style, project_fallback, project_fallback)
+            })
             .patch(
                 editor
                     .theme
@@ -842,17 +850,31 @@ impl EditorView {
                     .unwrap_or_default(),
             )
             .add_modifier(Modifier::BOLD);
+        let file_fallback = editor
+            .theme
+            .try_get("ui.statusline.insert")
+            .or_else(|| editor.theme.try_get("ui.cursor"))
+            .or_else(|| editor.theme.try_get("ui.bufferline.active"))
+            .unwrap_or(base_style);
         let file_style = editor
             .theme
             .try_get("ui.statusline.capsule.file")
-            .or_else(|| editor.theme.try_get("ui.bufferline.active"))
-            .unwrap_or(base_style)
+            .unwrap_or_else(|| {
+                statusline::capsule_contrast_style(base_style, file_fallback, file_fallback)
+            })
             .add_modifier(Modifier::BOLD);
+        let meta_fallback = editor
+            .theme
+            .try_get("ui.statusline.select")
+            .or_else(|| editor.theme.try_get("ui.selection.primary"))
+            .or_else(|| editor.theme.try_get("ui.statusline.inactive"))
+            .unwrap_or(base_style);
         let meta_style = editor
             .theme
             .try_get("ui.statusline.capsule.meta")
-            .or_else(|| editor.theme.try_get("ui.statusline.inactive"))
-            .unwrap_or(base_style);
+            .unwrap_or_else(|| {
+                statusline::capsule_contrast_style(base_style, meta_fallback, meta_fallback)
+            });
 
         let mut left = Spans::default();
         if let Some(project) = editor.active_project_name() {

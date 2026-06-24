@@ -220,29 +220,30 @@ fn render_capsule(context: &mut RenderContext, viewport: Rect, surface: &mut Sur
         .filter(|head| !head.is_empty());
     let position = capsule_position_label(context);
 
+    let accent_style = capsule_accent_style(context, base_style);
     let mut left = Spans::default();
     push_capsule(
         &mut left,
         glyphs,
         &mode,
-        capsule_mode_style(context),
+        capsule_mode_style(context, base_style),
         base_style,
     );
-    push_capsule_separator(&mut left, glyphs, capsule_accent_style(context), base_style);
+    push_capsule_separator(&mut left, glyphs, accent_style, base_style);
     push_capsule(
         &mut left,
         glyphs,
         language,
-        capsule_file_style(context),
+        capsule_file_style(context, base_style),
         base_style,
     );
     if let Some(diagnostics) = diagnostics.as_deref() {
-        push_capsule_separator(&mut left, glyphs, capsule_accent_style(context), base_style);
+        push_capsule_separator(&mut left, glyphs, accent_style, base_style);
         push_capsule(
             &mut left,
             glyphs,
             diagnostics,
-            capsule_meta_style(context),
+            capsule_meta_style(context, base_style),
             base_style,
         );
     }
@@ -253,21 +254,16 @@ fn render_capsule(context: &mut RenderContext, viewport: Rect, surface: &mut Sur
             &mut right,
             glyphs,
             &format!("{} {}", glyphs.git_icon, branch),
-            capsule_project_style(context),
+            capsule_project_style(context, base_style),
             base_style,
         );
-        push_capsule_separator(
-            &mut right,
-            glyphs,
-            capsule_accent_style(context),
-            base_style,
-        );
+        push_capsule_separator(&mut right, glyphs, accent_style, base_style);
     }
     push_capsule(
         &mut right,
         glyphs,
         &position,
-        capsule_meta_style(context),
+        capsule_meta_style(context, base_style),
         base_style,
     );
 
@@ -327,11 +323,27 @@ fn capsule_diagnostics_label(context: &RenderContext) -> Option<String> {
     (!parts.is_empty()).then(|| format!("⚠ {}", parts.join(" ")))
 }
 
-fn capsule_style(context: &RenderContext, key: &str, fallback: Style) -> Style {
-    context.editor.theme.try_get(key).unwrap_or(fallback)
+fn first_theme_style(editor: &Editor, keys: &[&str], fallback: Style) -> Style {
+    keys.iter()
+        .find_map(|key| editor.theme.try_get(key))
+        .unwrap_or(fallback)
 }
 
-fn capsule_mode_style(context: &RenderContext) -> Style {
+fn capsule_style(
+    context: &RenderContext,
+    key: &str,
+    line_style: Style,
+    fallback: Style,
+    accent: Style,
+) -> Style {
+    context
+        .editor
+        .theme
+        .try_get(key)
+        .unwrap_or_else(|| capsule_contrast_style(line_style, fallback, accent))
+}
+
+fn capsule_mode_style(context: &RenderContext, line_style: Style) -> Style {
     let fallback = if context.editor.config().color_modes {
         match context.editor.mode() {
             Mode::Insert => context.editor.theme.get("ui.statusline.insert"),
@@ -341,39 +353,102 @@ fn capsule_mode_style(context: &RenderContext) -> Style {
     } else {
         context.editor.theme.get("ui.statusline.normal")
     };
-    capsule_style(context, "ui.statusline.capsule.mode", fallback)
+    capsule_style(
+        context,
+        "ui.statusline.capsule.mode",
+        line_style,
+        fallback,
+        fallback,
+    )
 }
 
-fn capsule_file_style(context: &RenderContext) -> Style {
+fn capsule_file_style(context: &RenderContext, line_style: Style) -> Style {
+    let fallback = first_theme_style(
+        context.editor,
+        &["ui.statusline.insert", "ui.cursor", "ui.text.focus"],
+        context.editor.theme.get("ui.statusline"),
+    );
     capsule_style(
         context,
         "ui.statusline.capsule.file",
-        context.editor.theme.get("ui.statusline"),
+        line_style,
+        fallback,
+        fallback,
     )
 }
 
-fn capsule_project_style(context: &RenderContext) -> Style {
+fn capsule_project_style(context: &RenderContext, line_style: Style) -> Style {
+    let fallback = first_theme_style(
+        context.editor,
+        &["ui.statusline.normal", "ui.text.focus"],
+        context.editor.theme.get("ui.statusline"),
+    );
     capsule_style(
         context,
         "ui.statusline.capsule.project",
-        context.editor.theme.get("ui.statusline"),
+        line_style,
+        fallback,
+        fallback,
     )
 }
 
-fn capsule_meta_style(context: &RenderContext) -> Style {
+fn capsule_meta_style(context: &RenderContext, line_style: Style) -> Style {
+    let fallback = first_theme_style(
+        context.editor,
+        &[
+            "ui.statusline.select",
+            "ui.selection.primary",
+            "ui.statusline.inactive",
+        ],
+        context.editor.theme.get("ui.statusline"),
+    );
     capsule_style(
         context,
         "ui.statusline.capsule.meta",
-        context.editor.theme.get("ui.statusline"),
+        line_style,
+        fallback,
+        fallback,
     )
 }
 
-fn capsule_accent_style(context: &RenderContext) -> Style {
-    capsule_style(
-        context,
-        "ui.statusline.capsule.accent",
-        context.editor.theme.get("ui.statusline.separator"),
-    )
+fn capsule_accent_style(context: &RenderContext, line_style: Style) -> Style {
+    context
+        .editor
+        .theme
+        .try_get("ui.statusline.capsule.accent")
+        .unwrap_or_else(|| {
+            first_theme_style(
+                context.editor,
+                &[
+                    "ui.text.focus",
+                    "ui.statusline.normal",
+                    "ui.statusline.separator",
+                ],
+                line_style,
+            )
+        })
+}
+
+pub(super) fn capsule_contrast_style(line_style: Style, fallback: Style, accent: Style) -> Style {
+    let mut style = fallback;
+    let needs_background = style.bg.is_none() || style.bg == line_style.bg;
+
+    if needs_background {
+        if let Some(background) = accent.bg.or(accent.fg).or(fallback.fg).or(line_style.fg) {
+            style.bg = Some(background);
+            style.fg = line_style.bg.or(line_style.fg);
+        }
+    }
+
+    if style.fg.is_none() {
+        style.fg = line_style.fg;
+    }
+
+    if style.fg == style.bg {
+        style.fg = line_style.bg.or(line_style.fg);
+    }
+
+    style
 }
 
 pub(super) fn push_capsule<'a>(
@@ -915,5 +990,29 @@ mod tests {
             vec![" NORMAL ", "✦", " C3 ", "✦", " ⚠ warnings 2 "]
         );
         assert_eq!(segments.right, vec!["  main ", "✦", " 44:1 · 62% "]);
+    }
+
+    #[test]
+    fn capsule_contrast_style_uses_accent_when_fallback_matches_line_background() {
+        let line = Style::default().fg(Color::White).bg(Color::Black);
+        let fallback = Style::default().fg(Color::White).bg(Color::Black);
+        let accent = Style::default().fg(Color::Yellow);
+
+        let style = capsule_contrast_style(line, fallback, accent);
+
+        assert_eq!(style.bg, Some(Color::Yellow));
+        assert_eq!(style.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn capsule_contrast_style_preserves_existing_distinct_background() {
+        let line = Style::default().fg(Color::White).bg(Color::Black);
+        let fallback = Style::default().fg(Color::White).bg(Color::Blue);
+        let accent = Style::default().fg(Color::Yellow);
+
+        let style = capsule_contrast_style(line, fallback, accent);
+
+        assert_eq!(style.bg, Some(Color::Blue));
+        assert_eq!(style.fg, Some(Color::White));
     }
 }
