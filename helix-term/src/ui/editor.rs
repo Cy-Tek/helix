@@ -93,6 +93,21 @@ fn capsule_titlebar_segments(
     }
 }
 
+fn capsule_titlebar_segment_style(line_style: Style, fallback: Style) -> Style {
+    statusline::capsule_contrast_style(line_style, fallback, fallback).add_modifier(Modifier::BOLD)
+}
+
+fn capsule_parent_path_style(line_style: Style, text_style: Style) -> Style {
+    let mut style = text_style;
+    style.bg = line_style.bg;
+
+    if style.fg.is_none() || style.fg == style.bg {
+        style.fg = line_style.fg;
+    }
+
+    style
+}
+
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
@@ -832,49 +847,32 @@ impl EditorView {
             .or_else(|| editor.theme.try_get("ui.text.focus"))
             .or_else(|| editor.theme.try_get("ui.statusline.normal"))
             .unwrap_or(base_style);
-        let project_fallback = editor
-            .theme
-            .try_get("ui.statusline.normal")
-            .or_else(|| editor.theme.try_get("ui.text.focus"))
-            .unwrap_or(base_style);
         let project_style = editor
             .theme
             .try_get("ui.statusline.capsule.project")
             .unwrap_or_else(|| {
-                statusline::capsule_contrast_style(base_style, project_fallback, project_fallback)
-            })
-            .patch(
-                editor
-                    .theme
-                    .try_get("ui.text.directory")
-                    .unwrap_or_default(),
-            )
-            .add_modifier(Modifier::BOLD);
-        let file_fallback = editor
-            .theme
-            .try_get("ui.statusline.insert")
-            .or_else(|| editor.theme.try_get("ui.cursor"))
-            .or_else(|| editor.theme.try_get("ui.bufferline.active"))
-            .unwrap_or(base_style);
+                capsule_titlebar_segment_style(base_style, editor.theme.get("ui.statusline.normal"))
+            });
         let file_style = editor
             .theme
             .try_get("ui.statusline.capsule.file")
             .unwrap_or_else(|| {
-                statusline::capsule_contrast_style(base_style, file_fallback, file_fallback)
-            })
-            .add_modifier(Modifier::BOLD);
-        let meta_fallback = editor
-            .theme
-            .try_get("ui.statusline.select")
-            .or_else(|| editor.theme.try_get("ui.selection.primary"))
-            .or_else(|| editor.theme.try_get("ui.statusline.inactive"))
-            .unwrap_or(base_style);
+                capsule_titlebar_segment_style(base_style, editor.theme.get("ui.statusline.insert"))
+            });
         let meta_style = editor
             .theme
             .try_get("ui.statusline.capsule.meta")
             .unwrap_or_else(|| {
-                statusline::capsule_contrast_style(base_style, meta_fallback, meta_fallback)
+                capsule_titlebar_segment_style(base_style, editor.theme.get("ui.statusline.select"))
             });
+        let parent_path_style = capsule_parent_path_style(
+            base_style,
+            editor
+                .theme
+                .try_get("ui.text.inactive")
+                .or_else(|| editor.theme.try_get("comment"))
+                .unwrap_or_else(|| editor.theme.get("ui.text")),
+        );
 
         let mut left = Spans::default();
         if let Some(project) = editor.active_project_name() {
@@ -884,7 +882,7 @@ impl EditorView {
         statusline::push_capsule(&mut left, glyphs, file_name, file_style, base_style);
         if let Some(parent) = parent.as_deref() {
             left.0
-                .push(Span::styled(format!("  {}", parent), meta_style));
+                .push(Span::styled(format!("  {}", parent), parent_path_style));
         }
 
         let mut right = Spans::default();
@@ -1911,7 +1909,10 @@ impl Component for EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::{capsule_titlebar_segments, EditorView};
+    use super::{
+        capsule_parent_path_style, capsule_titlebar_segment_style, capsule_titlebar_segments,
+        EditorView,
+    };
     use helix_core::{FoldRange, Rope};
     use helix_view::editor::StatusLineGlyphs;
 
@@ -1974,6 +1975,32 @@ mod tests {
             .iter()
             .chain(segments.right.iter())
             .all(|segment| !segment.contains('')));
+    }
+
+    #[test]
+    fn capsule_parent_path_style_uses_line_background_not_capsule_background() {
+        use helix_view::graphics::{Color, Style};
+
+        let line_style = Style::default().fg(Color::White).bg(Color::Black);
+        let text_style = Style::default().fg(Color::LightBlue).bg(Color::Blue);
+
+        let style = capsule_parent_path_style(line_style, text_style);
+
+        assert_eq!(style.fg, Some(Color::LightBlue));
+        assert_eq!(style.bg, Some(Color::Black));
+    }
+
+    #[test]
+    fn capsule_project_style_keeps_readable_default_contrast() {
+        use helix_view::graphics::{Color, Style};
+
+        let line_style = Style::default().fg(Color::White).bg(Color::Black);
+        let fallback = Style::default().fg(Color::Black).bg(Color::LightBlue);
+
+        let style = capsule_titlebar_segment_style(line_style, fallback);
+
+        assert_eq!(style.fg, Some(Color::Black));
+        assert_eq!(style.bg, Some(Color::LightBlue));
     }
 }
 
