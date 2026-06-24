@@ -167,6 +167,23 @@ pub(super) fn capsule_text(glyphs: CapsuleGlyphs, label: &str) -> String {
     format!("{} {} {}", glyphs.left_cap, label, glyphs.right_cap)
 }
 
+const CAPSULE_EDGE_PADDING: u16 = 1;
+
+pub(super) fn capsule_left_x(viewport: Rect) -> u16 {
+    if viewport.width > CAPSULE_EDGE_PADDING {
+        viewport.x.saturating_add(CAPSULE_EDGE_PADDING)
+    } else {
+        viewport.x
+    }
+}
+
+pub(super) fn capsule_right_x(viewport: Rect, width: u16) -> u16 {
+    viewport.x
+        + viewport
+            .width
+            .saturating_sub(width.saturating_add(CAPSULE_EDGE_PADDING))
+}
+
 #[cfg(test)]
 fn capsule_footer_segments(
     glyphs: StatusLineGlyphs,
@@ -267,9 +284,14 @@ fn render_capsule(context: &mut RenderContext, viewport: Rect, surface: &mut Sur
         base_style,
     );
 
-    surface.set_spans(viewport.x, viewport.y, &left, left.width() as u16);
     surface.set_spans(
-        viewport.x + viewport.width.saturating_sub(right.width() as u16),
+        capsule_left_x(viewport),
+        viewport.y,
+        &left,
+        left.width() as u16,
+    );
+    surface.set_spans(
+        capsule_right_x(viewport, right.width() as u16),
         viewport.y,
         &right,
         right.width() as u16,
@@ -999,6 +1021,28 @@ mod tests {
             vec![" NORMAL ", "✦", " C3 ", "✦", " ⚠ warnings 2 "]
         );
         assert_eq!(segments.right, vec!["  main ", "✦", " 44:1 · 62% "]);
+    }
+
+    #[test]
+    fn capsule_left_x_leaves_one_cell_at_terminal_edge() {
+        let viewport = Rect::new(0, 0, 100, 1);
+
+        assert_eq!(capsule_left_x(viewport), 1);
+    }
+
+    #[test]
+    fn capsule_right_x_leaves_one_cell_at_terminal_edge() {
+        let viewport = Rect::new(0, 0, 100, 1);
+
+        assert_eq!(capsule_right_x(viewport, 12), 87);
+    }
+
+    #[test]
+    fn capsule_edge_padding_does_not_underflow_tiny_viewports() {
+        let viewport = Rect::new(7, 0, 0, 1);
+
+        assert_eq!(capsule_left_x(viewport), 7);
+        assert_eq!(capsule_right_x(viewport, 12), 7);
     }
 
     #[test]

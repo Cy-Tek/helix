@@ -888,9 +888,14 @@ impl EditorView {
         let mut right = Spans::default();
         statusline::push_capsule(&mut right, glyphs, state, meta_style, base_style);
 
-        surface.set_spans(viewport.x, viewport.y, &left, left.width() as u16);
         surface.set_spans(
-            viewport.x + viewport.width.saturating_sub(right.width() as u16),
+            statusline::capsule_left_x(viewport),
+            viewport.y,
+            &left,
+            left.width() as u16,
+        );
+        surface.set_spans(
+            statusline::capsule_right_x(viewport, right.width() as u16),
             viewport.y,
             &right,
             right.width() as u16,
