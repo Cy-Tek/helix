@@ -640,6 +640,8 @@ pub struct StatusLineConfig {
     pub left: Vec<StatusLineElement>,
     pub center: Vec<StatusLineElement>,
     pub right: Vec<StatusLineElement>,
+    pub style: StatusLineStyle,
+    pub glyphs: StatusLineGlyphs,
     pub separator: String,
     pub mode: ModeConfig,
     pub diagnostics: Vec<Severity>,
@@ -666,12 +668,30 @@ impl Default for StatusLineConfig {
                 E::Position,
                 E::FileEncoding,
             ],
+            style: StatusLineStyle::default(),
+            glyphs: StatusLineGlyphs::default(),
             separator: String::from("│"),
             mode: ModeConfig::default(),
             diagnostics: vec![Severity::Warning, Severity::Error],
             workspace_diagnostics: vec![Severity::Warning, Severity::Error],
         }
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusLineStyle {
+    #[default]
+    Classic,
+    Capsule,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusLineGlyphs {
+    #[default]
+    Nerd,
+    Plain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2818,6 +2838,29 @@ mod tests {
         assert!(!config.file_explorer.preview);
         assert!(!config.file_explorer.git_status);
         assert!(config.file_explorer.delete_to_trash);
+    }
+
+    #[test]
+    fn statusline_defaults_to_classic_nerd_glyphs() {
+        let config = Config::default();
+
+        assert_eq!(config.statusline.style, StatusLineStyle::Classic);
+        assert_eq!(config.statusline.glyphs, StatusLineGlyphs::Nerd);
+    }
+
+    #[test]
+    fn statusline_parses_capsule_style_and_plain_glyphs() {
+        let config = toml::from_str::<Config>(
+            r#"
+            [statusline]
+            style = "capsule"
+            glyphs = "plain"
+        "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.statusline.style, StatusLineStyle::Capsule);
+        assert_eq!(config.statusline.glyphs, StatusLineGlyphs::Plain);
     }
 
     fn test_syntax_loader() -> syntax::Loader {

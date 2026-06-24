@@ -25,7 +25,7 @@ use helix_core::{
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
-    editor::{CompleteAction, CursorShapeConfig},
+    editor::{CompleteAction, CursorShapeConfig, StatusLineStyle},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
@@ -33,7 +33,10 @@ use helix_view::{
 };
 use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
-use tui::{buffer::Buffer as Surface, text::Span};
+use tui::{
+    buffer::Buffer as Surface,
+    text::{Span, Spans},
+};
 
 pub struct EditorView {
     pub keymaps: Keymaps,
@@ -55,6 +58,39 @@ pub enum InsertEvent {
     },
     TriggerCompletion,
     RequestCompletion,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+struct CapsuleTitlebarSegments {
+    left: Vec<String>,
+    right: Vec<String>,
+}
+
+#[cfg(test)]
+fn capsule_titlebar_segments(
+    glyphs: helix_view::editor::StatusLineGlyphs,
+    project: Option<&str>,
+    file: &str,
+    parent: Option<&str>,
+    state: &str,
+) -> CapsuleTitlebarSegments {
+    let glyphs = statusline::capsule_glyphs(glyphs);
+    let mut left = Vec::new();
+
+    if let Some(project) = project {
+        left.push(statusline::capsule_text(glyphs, project));
+        left.push(glyphs.separator.into());
+    }
+    left.push(statusline::capsule_text(glyphs, file));
+    if let Some(parent) = parent {
+        left.push(parent.into());
+    }
+
+    CapsuleTitlebarSegments {
+        left,
+        right: vec![statusline::capsule_text(glyphs, state)],
+    }
 }
 
 impl EditorView {
@@ -674,6 +710,11 @@ impl EditorView {
 
     /// Render bufferline at the top
     pub fn render_bufferline(editor: &Editor, viewport: Rect, surface: &mut Surface) {
+        if editor.config().statusline.style == StatusLineStyle::Capsule {
+            Self::render_capsule_titlebar(editor, viewport, surface);
+            return;
+        }
+
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
         surface.clear_with(
             viewport,
@@ -749,6 +790,91 @@ impl EditorView {
                 break;
             }
         }
+    }
+
+    fn render_capsule_titlebar(editor: &Editor, viewport: Rect, surface: &mut Surface) {
+        let base_style = editor
+            .theme
+            .try_get("ui.statusline.capsule")
+            .or_else(|| editor.theme.try_get("ui.bufferline.background"))
+            .unwrap_or_else(|| editor.theme.get("ui.statusline"));
+        surface.clear_with(viewport, base_style);
+
+        let current_doc = view!(editor).doc;
+        let scratch = PathBuf::from(SCRATCH_BUFFER_NAME);
+        let Some(doc) = editor.documents().find(|doc| doc.id() == current_doc) else {
+            return;
+        };
+        let file_name = doc
+            .path()
+            .unwrap_or(&scratch)
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default();
+        let parent = doc
+            .relative_path()
+            .and_then(|path| path.parent())
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.to_string_lossy().to_string());
+        let state = if doc.is_modified() {
+            "modified"
+        } else if doc.readonly {
+            "readonly"
+        } else {
+            "saved"
+        };
+
+        let glyphs = statusline::capsule_glyphs(editor.config().statusline.glyphs);
+        let accent_style = editor
+            .theme
+            .try_get("ui.statusline.capsule.accent")
+            .unwrap_or_else(|| editor.theme.get("ui.statusline.separator"));
+        let project_style = editor
+            .theme
+            .try_get("ui.statusline.capsule.project")
+            .or_else(|| editor.theme.try_get("ui.statusline.active"))
+            .unwrap_or(base_style)
+            .patch(
+                editor
+                    .theme
+                    .try_get("ui.text.directory")
+                    .unwrap_or_default(),
+            )
+            .add_modifier(Modifier::BOLD);
+        let file_style = editor
+            .theme
+            .try_get("ui.statusline.capsule.file")
+            .or_else(|| editor.theme.try_get("ui.bufferline.active"))
+            .unwrap_or(base_style)
+            .add_modifier(Modifier::BOLD);
+        let meta_style = editor
+            .theme
+            .try_get("ui.statusline.capsule.meta")
+            .or_else(|| editor.theme.try_get("ui.statusline.inactive"))
+            .unwrap_or(base_style);
+
+        let mut left = Spans::default();
+        if let Some(project) = editor.active_project_name() {
+            statusline::push_capsule(&mut left, glyphs, project, project_style, base_style);
+            statusline::push_capsule_separator(&mut left, glyphs, accent_style, base_style);
+        }
+        statusline::push_capsule(&mut left, glyphs, file_name, file_style, base_style);
+        if let Some(parent) = parent.as_deref() {
+            left.0
+                .push(Span::styled(format!("  {}", parent), meta_style));
+        }
+
+        let mut right = Spans::default();
+        statusline::push_capsule(&mut right, glyphs, state, meta_style, base_style);
+
+        surface.set_spans(viewport.x, viewport.y, &left, left.width() as u16);
+        surface.set_spans(
+            viewport.x + viewport.width.saturating_sub(right.width() as u16),
+            viewport.y,
+            &right,
+            right.width() as u16,
+        );
     }
 
     pub fn render_gutter<'d>(
@@ -1763,8 +1889,9 @@ impl Component for EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::EditorView;
+    use super::{capsule_titlebar_segments, EditorView};
     use helix_core::{FoldRange, Rope};
+    use helix_view::editor::StatusLineGlyphs;
 
     #[test]
     fn viewport_byte_range_extends_past_folded_lines() {
@@ -1789,6 +1916,42 @@ mod tests {
         let range = EditorView::viewport_byte_range_with_folds(text.slice(..), 0, 4, &[]);
 
         assert_eq!(range, text.line_to_byte(0)..text.line_to_byte(4));
+    }
+
+    #[test]
+    fn capsule_titlebar_segments_include_project_file_parent_and_state() {
+        let segments = capsule_titlebar_segments(
+            StatusLineGlyphs::Nerd,
+            Some("game_engine_2d"),
+            "registry.c3",
+            Some("src/ecs"),
+            "saved",
+        );
+
+        assert_eq!(
+            segments.left,
+            vec![" game_engine_2d ", "✦", " registry.c3 ", "src/ecs"]
+        );
+        assert_eq!(segments.right, vec![" saved "]);
+    }
+
+    #[test]
+    fn capsule_titlebar_plain_glyphs_avoid_nerd_font_symbols() {
+        let segments = capsule_titlebar_segments(
+            StatusLineGlyphs::Plain,
+            Some("helix"),
+            "editor.rs",
+            None,
+            "modified",
+        );
+
+        assert_eq!(segments.left, vec!["( helix )", "*", "( editor.rs )"]);
+        assert_eq!(segments.right, vec!["( modified )"]);
+        assert!(segments
+            .left
+            .iter()
+            .chain(segments.right.iter())
+            .all(|segment| !segment.contains('')));
     }
 }
 

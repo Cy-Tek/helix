@@ -2,9 +2,10 @@ use helix_core::indent::IndentStyle;
 use helix_core::{coords_at_pos, encoding, unicode::width::UnicodeWidthStr, Position};
 use helix_lsp::lsp::DiagnosticSeverity;
 use helix_view::document::DEFAULT_LANGUAGE_NAME;
+use helix_view::editor::{StatusLineGlyphs, StatusLineStyle};
 use helix_view::{
     document::{Mode, SCRATCH_BUFFER_NAME},
-    graphics::Rect,
+    graphics::{Color, Rect},
     theme::Style,
     Document, Editor, View,
 };
@@ -51,6 +52,11 @@ pub struct RenderBuffer<'a> {
 }
 
 pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
+    if context.editor.config().statusline.style == StatusLineStyle::Capsule {
+        render_capsule(context, viewport, surface);
+        return;
+    }
+
     let base_style = if context.focused {
         context.editor.theme.get("ui.statusline")
     } else {
@@ -123,6 +129,290 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
 fn append<'a>(buffer: &mut Spans<'a>, mut span: Span<'a>, base_style: Style) {
     span.style = base_style.patch(span.style);
     buffer.0.push(span);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CapsuleGlyphs {
+    pub(super) left_cap: &'static str,
+    pub(super) right_cap: &'static str,
+    pub(super) separator: &'static str,
+    pub(super) git_icon: &'static str,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+struct CapsuleFooterSegments {
+    left: Vec<String>,
+    right: Vec<String>,
+}
+
+pub(super) fn capsule_glyphs(glyphs: StatusLineGlyphs) -> CapsuleGlyphs {
+    match glyphs {
+        StatusLineGlyphs::Nerd => CapsuleGlyphs {
+            left_cap: "",
+            right_cap: "",
+            separator: "✦",
+            git_icon: "",
+        },
+        StatusLineGlyphs::Plain => CapsuleGlyphs {
+            left_cap: "(",
+            right_cap: ")",
+            separator: "*",
+            git_icon: "git",
+        },
+    }
+}
+
+pub(super) fn capsule_text(glyphs: CapsuleGlyphs, label: &str) -> String {
+    format!("{} {} {}", glyphs.left_cap, label, glyphs.right_cap)
+}
+
+#[cfg(test)]
+fn capsule_footer_segments(
+    glyphs: StatusLineGlyphs,
+    mode: &str,
+    language: &str,
+    diagnostics: Option<&str>,
+    branch: Option<&str>,
+    position: &str,
+) -> CapsuleFooterSegments {
+    let glyphs = capsule_glyphs(glyphs);
+    let mut left = vec![capsule_text(glyphs, mode), glyphs.separator.into()];
+    left.push(capsule_text(glyphs, language));
+    if let Some(diagnostics) = diagnostics {
+        left.push(glyphs.separator.into());
+        left.push(capsule_text(glyphs, diagnostics));
+    }
+
+    let mut right = Vec::new();
+    if let Some(branch) = branch {
+        right.push(capsule_text(
+            glyphs,
+            &format!("{} {}", glyphs.git_icon, branch),
+        ));
+        right.push(glyphs.separator.into());
+    }
+    right.push(capsule_text(glyphs, position));
+
+    CapsuleFooterSegments { left, right }
+}
+
+fn render_capsule(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
+    let base_style = if context.focused {
+        context
+            .editor
+            .theme
+            .try_get("ui.statusline.capsule")
+            .unwrap_or_else(|| context.editor.theme.get("ui.statusline"))
+    } else {
+        context.editor.theme.get("ui.statusline.inactive")
+    };
+    surface.set_style(viewport.with_height(1), base_style);
+
+    let glyphs = capsule_glyphs(context.editor.config().statusline.glyphs);
+    let mode = capsule_mode_label(context);
+    let language = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
+    let diagnostics = capsule_diagnostics_label(context);
+    let branch = context
+        .doc
+        .version_control_head()
+        .map(|head| head.to_string())
+        .filter(|head| !head.is_empty());
+    let position = capsule_position_label(context);
+
+    let mut left = Spans::default();
+    push_capsule(
+        &mut left,
+        glyphs,
+        &mode,
+        capsule_mode_style(context),
+        base_style,
+    );
+    push_capsule_separator(&mut left, glyphs, capsule_accent_style(context), base_style);
+    push_capsule(
+        &mut left,
+        glyphs,
+        language,
+        capsule_file_style(context),
+        base_style,
+    );
+    if let Some(diagnostics) = diagnostics.as_deref() {
+        push_capsule_separator(&mut left, glyphs, capsule_accent_style(context), base_style);
+        push_capsule(
+            &mut left,
+            glyphs,
+            diagnostics,
+            capsule_meta_style(context),
+            base_style,
+        );
+    }
+
+    let mut right = Spans::default();
+    if let Some(branch) = branch.as_deref() {
+        push_capsule(
+            &mut right,
+            glyphs,
+            &format!("{} {}", glyphs.git_icon, branch),
+            capsule_project_style(context),
+            base_style,
+        );
+        push_capsule_separator(
+            &mut right,
+            glyphs,
+            capsule_accent_style(context),
+            base_style,
+        );
+    }
+    push_capsule(
+        &mut right,
+        glyphs,
+        &position,
+        capsule_meta_style(context),
+        base_style,
+    );
+
+    surface.set_spans(viewport.x, viewport.y, &left, left.width() as u16);
+    surface.set_spans(
+        viewport.x + viewport.width.saturating_sub(right.width() as u16),
+        viewport.y,
+        &right,
+        right.width() as u16,
+    );
+}
+
+fn capsule_mode_label(context: &RenderContext) -> String {
+    let mode = &context.editor.config().statusline.mode;
+    match context.editor.mode() {
+        Mode::Insert => mode.insert.clone(),
+        Mode::Select => mode.select.clone(),
+        Mode::Normal => mode.normal.clone(),
+    }
+}
+
+fn capsule_position_label(context: &RenderContext) -> String {
+    let position = get_position(context);
+    let maxrows = context.doc.text().len_lines();
+    let percent = (position.row + 1) * 100 / maxrows;
+    format!("{}:{} · {}%", position.row + 1, position.col + 1, percent)
+}
+
+fn capsule_diagnostics_label(context: &RenderContext) -> Option<String> {
+    use helix_core::diagnostic::Severity;
+    let (hints, info, warnings, errors) =
+        context
+            .doc
+            .diagnostics()
+            .iter()
+            .fold((0, 0, 0, 0), |mut counts, diag| {
+                match diag.severity {
+                    Some(Severity::Hint) | None => counts.0 += 1,
+                    Some(Severity::Info) => counts.1 += 1,
+                    Some(Severity::Warning) => counts.2 += 1,
+                    Some(Severity::Error) => counts.3 += 1,
+                }
+                counts
+            });
+
+    let mut parts = Vec::new();
+    for severity in &context.editor.config().statusline.diagnostics {
+        match severity {
+            Severity::Hint if hints > 0 => parts.push(format!("hints {hints}")),
+            Severity::Info if info > 0 => parts.push(format!("info {info}")),
+            Severity::Warning if warnings > 0 => parts.push(format!("warnings {warnings}")),
+            Severity::Error if errors > 0 => parts.push(format!("errors {errors}")),
+            _ => {}
+        }
+    }
+
+    (!parts.is_empty()).then(|| format!("⚠ {}", parts.join(" ")))
+}
+
+fn capsule_style(context: &RenderContext, key: &str, fallback: Style) -> Style {
+    context.editor.theme.try_get(key).unwrap_or(fallback)
+}
+
+fn capsule_mode_style(context: &RenderContext) -> Style {
+    let fallback = if context.editor.config().color_modes {
+        match context.editor.mode() {
+            Mode::Insert => context.editor.theme.get("ui.statusline.insert"),
+            Mode::Select => context.editor.theme.get("ui.statusline.select"),
+            Mode::Normal => context.editor.theme.get("ui.statusline.normal"),
+        }
+    } else {
+        context.editor.theme.get("ui.statusline.normal")
+    };
+    capsule_style(context, "ui.statusline.capsule.mode", fallback)
+}
+
+fn capsule_file_style(context: &RenderContext) -> Style {
+    capsule_style(
+        context,
+        "ui.statusline.capsule.file",
+        context.editor.theme.get("ui.statusline"),
+    )
+}
+
+fn capsule_project_style(context: &RenderContext) -> Style {
+    capsule_style(
+        context,
+        "ui.statusline.capsule.project",
+        context.editor.theme.get("ui.statusline"),
+    )
+}
+
+fn capsule_meta_style(context: &RenderContext) -> Style {
+    capsule_style(
+        context,
+        "ui.statusline.capsule.meta",
+        context.editor.theme.get("ui.statusline"),
+    )
+}
+
+fn capsule_accent_style(context: &RenderContext) -> Style {
+    capsule_style(
+        context,
+        "ui.statusline.capsule.accent",
+        context.editor.theme.get("ui.statusline.separator"),
+    )
+}
+
+pub(super) fn push_capsule<'a>(
+    spans: &mut Spans<'a>,
+    glyphs: CapsuleGlyphs,
+    label: &str,
+    body_style: Style,
+    line_style: Style,
+) {
+    if glyphs.left_cap == "(" {
+        spans
+            .0
+            .push(Span::styled(capsule_text(glyphs, label), body_style));
+        return;
+    }
+
+    let cap_color = body_style.bg.or(body_style.fg).unwrap_or(Color::Reset);
+    let cap_style = Style::default()
+        .fg(cap_color)
+        .bg(line_style.bg.unwrap_or(Color::Reset));
+    spans
+        .0
+        .push(Span::styled(glyphs.left_cap.to_string(), cap_style));
+    spans.0.push(Span::styled(format!(" {label} "), body_style));
+    spans
+        .0
+        .push(Span::styled(glyphs.right_cap.to_string(), cap_style));
+}
+
+pub(super) fn push_capsule_separator<'a>(
+    spans: &mut Spans<'a>,
+    glyphs: CapsuleGlyphs,
+    accent_style: Style,
+    line_style: Style,
+) {
+    spans.0.push(Span::styled(
+        format!(" {} ", glyphs.separator),
+        line_style.patch(accent_style),
+    ));
 }
 
 fn get_render_function<'a, F>(element_id: StatusLineElementID) -> impl Fn(&mut RenderContext<'a>, F)
@@ -582,4 +872,48 @@ where
         .to_string_lossy()
         .to_string();
     write(context, cwd.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_view::editor::StatusLineGlyphs;
+
+    #[test]
+    fn capsule_nerd_glyphs_use_powerline_caps_and_stars() {
+        let glyphs = capsule_glyphs(StatusLineGlyphs::Nerd);
+
+        assert_eq!(glyphs.left_cap, "");
+        assert_eq!(glyphs.right_cap, "");
+        assert_eq!(glyphs.separator, "✦");
+        assert_eq!(capsule_text(glyphs, "NORMAL"), " NORMAL ");
+    }
+
+    #[test]
+    fn capsule_plain_glyphs_avoid_nerd_font_symbols() {
+        let glyphs = capsule_glyphs(StatusLineGlyphs::Plain);
+        let text = capsule_text(glyphs, "NORMAL");
+
+        assert_eq!(text, "( NORMAL )");
+        assert!(!text.contains(''));
+        assert_eq!(glyphs.separator, "*");
+    }
+
+    #[test]
+    fn capsule_footer_segments_include_mode_language_branch_and_position() {
+        let segments = capsule_footer_segments(
+            StatusLineGlyphs::Nerd,
+            "NORMAL",
+            "C3",
+            Some("⚠ warnings 2"),
+            Some("main"),
+            "44:1 · 62%",
+        );
+
+        assert_eq!(
+            segments.left,
+            vec![" NORMAL ", "✦", " C3 ", "✦", " ⚠ warnings 2 "]
+        );
+        assert_eq!(segments.right, vec!["  main ", "✦", " 44:1 · 62% "]);
+    }
 }

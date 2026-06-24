@@ -107,6 +107,8 @@ Statusline elements can be defined as follows:
 
 ```toml
 [editor.statusline]
+style = "classic"
+glyphs = "nerd"
 left = ["mode", "spinner"]
 center = ["file-name"]
 right = ["diagnostics", "selections", "position", "file-encoding", "file-line-ending", "file-type"]
@@ -121,6 +123,8 @@ The `[editor.statusline]` key takes the following sub-keys:
 
 | Key           | Description | Default |
 | ---           | ---         | ---     |
+| `style`       | Statusline renderer style. Can be `classic` or `capsule`. The `capsule` style also changes the bufferline/titlebar when `editor.bufferline` is visible | `"classic"` |
+| `glyphs`      | Glyph set used by the statusline renderer. Can be `nerd` for powerline-style symbols or `plain` for portable ASCII-friendly separators | `"nerd"` |
 | `left`        | A list of elements aligned to the left of the statusline | `["mode", "spinner", "file-name", "read-only-indicator", "file-modification-indicator"]` |
 | `center`      | A list of elements aligned to the middle of the statusline | `[]` |
 | `right`       | A list of elements aligned to the right of the statusline | `["diagnostics", "selections", "register", "position", "file-encoding"]` |
