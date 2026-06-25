@@ -6,6 +6,7 @@ mod image_preview;
 mod info;
 pub mod lsp;
 mod markdown;
+pub(crate) mod markdown_preview;
 pub mod menu;
 pub mod overlay;
 pub mod picker;

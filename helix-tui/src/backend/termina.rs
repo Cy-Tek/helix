@@ -55,6 +55,15 @@ fn detect_kitty_graphics() -> bool {
         return true;
     }
 
+    // Ghostty exports these into its shell environment; they survive into tmux panes (where `$TERM`
+    // becomes `tmux-256color` and `$TERM_PROGRAM` becomes `tmux`), so they let us recognize the
+    // outer terminal even when the usual signals have been masked by a multiplexer.
+    if std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
+        || std::env::var_os("GHOSTTY_BIN_DIR").is_some()
+    {
+        return true;
+    }
+
     if std::env::var("TERM")
         .is_ok_and(|term| term.contains("xterm-kitty") || term.contains("kitty"))
     {
@@ -65,6 +74,29 @@ fn detect_kitty_graphics() -> bool {
         term_program().as_deref(),
         Some("kitty" | "WezTerm" | "WezTerm-gui" | "Ghostty" | "ghostty")
     )
+}
+
+/// Whether Helix is running inside a tmux client. Graphics escape sequences must be wrapped in
+/// tmux's DCS passthrough envelope (and `allow-passthrough` must be enabled in tmux) to reach the
+/// host terminal.
+fn in_tmux() -> bool {
+    std::env::var_os("TMUX").is_some()
+}
+
+/// Wrap an escape sequence in tmux's DCS passthrough envelope so tmux forwards it to the host
+/// terminal. Every `ESC` (0x1b) byte in the payload is doubled; the envelope itself uses a single
+/// leading `ESC P tmux;` and a single trailing `ESC \` (ST).
+fn tmux_passthrough(sequence: &str) -> String {
+    let mut wrapped = String::with_capacity(sequence.len() + 16);
+    wrapped.push_str("\x1bPtmux;");
+    for ch in sequence.chars() {
+        if ch == '\x1b' {
+            wrapped.push('\x1b');
+        }
+        wrapped.push(ch);
+    }
+    wrapped.push_str("\x1b\\");
+    wrapped
 }
 
 fn encode_base64(input: &[u8]) -> String {
@@ -132,6 +164,9 @@ pub struct TerminaBackend {
     /// The terminal emulator's background color. This is queried when claiming the terminal so
     /// that custom colors set outside of Helix with OSC11 are restored when Helix exits.
     original_background_color: Option<RgbColor>,
+    /// Whether we are running inside tmux, in which case graphics escapes are wrapped in tmux's
+    /// DCS passthrough envelope.
+    tmux: bool,
 }
 
 impl TerminaBackend {
@@ -151,7 +186,7 @@ impl TerminaBackend {
 
         // HACK: emitting OSC11 / OSC111 seems to break SGR and cause flickering in tmux.
         capabilities.dynamic_background_color = std::env::var_os("TMUX").is_none();
-        capabilities.kitty_graphics = detect_kitty_graphics();
+        capabilities.kitty_graphics = detect_kitty_graphics() || config.force_enable_kitty_graphics;
 
         capabilities.kitty_keyboard = match config.kitty_keyboard_protocol {
             KittyKeyboardProtocolConfig::Disabled => KittyKeyboardSupport::None,
@@ -304,7 +339,20 @@ impl TerminaBackend {
             is_synchronized_output_set: false,
             background_color: None,
             original_background_color,
+            tmux: in_tmux(),
         })
+    }
+
+    /// Write a graphics (APC) escape sequence, wrapping it in tmux's DCS passthrough envelope when
+    /// running inside tmux. tmux forwards the wrapped bytes to the host terminal verbatim, except
+    /// that every `ESC` (0x1b) in the payload must be doubled; the outer `ESC \` terminator is a
+    /// single `ESC`. `allow-passthrough` must be enabled in tmux for this to take effect.
+    fn write_graphics(&mut self, sequence: &str) -> io::Result<()> {
+        if self.tmux {
+            write!(self.terminal, "{}", tmux_passthrough(sequence))
+        } else {
+            write!(self.terminal, "{sequence}")
+        }
     }
 
     pub fn terminal(&self) -> &PlatformTerminal {
@@ -683,15 +731,15 @@ impl Backend for TerminaBackend {
         let mut chunks = encoded.as_bytes().chunks(4096).peekable();
         while let Some(chunk) = chunks.next() {
             let more_chunks = chunks.peek().is_some();
-            write!(
-                self.terminal,
+            let sequence = format!(
                 "\x1b_Ga=T,f=100,i={},q=2,c={},r={},m={};{}\x1b\\",
                 image.id,
                 image.area.width,
                 image.area.height,
                 if more_chunks { 1 } else { 0 },
                 std::str::from_utf8(chunk).unwrap_or_default(),
-            )?;
+            );
+            self.write_graphics(&sequence)?;
         }
 
         Ok(())
@@ -699,7 +747,8 @@ impl Backend for TerminaBackend {
 
     fn clear_image(&mut self, id: u32) -> io::Result<()> {
         if self.capabilities.kitty_graphics {
-            write!(self.terminal, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", id)?;
+            let sequence = format!("\x1b_Ga=d,d=i,i={id},q=2\x1b\\");
+            self.write_graphics(&sequence)?;
         }
         Ok(())
     }
@@ -824,4 +873,32 @@ fn diff_modifiers(from: Modifier, to: Modifier) -> SgrModifiers {
     }
 
     modifiers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tmux_passthrough;
+
+    #[test]
+    fn tmux_passthrough_doubles_inner_escapes_and_wraps() {
+        // A kitty graphics command: ESC _ G ... ESC \
+        let inner = "\x1b_Ga=T,f=100,i=1;BASE64\x1b\\";
+        let wrapped = tmux_passthrough(inner);
+
+        // Envelope: single leading `ESC P tmux;`, single trailing `ESC \`.
+        assert!(wrapped.starts_with("\x1bPtmux;"));
+        assert!(wrapped.ends_with("\x1b\\"));
+
+        // Both inner ESC bytes (the APC opener and its ST) are doubled.
+        assert!(wrapped.contains("\x1b\x1b_Ga=T,f=100,i=1;BASE64\x1b\x1b\\"));
+
+        // Exactly: opener ESC + two doubled inner ESCs (=4) + terminator ESC = 6 ESC bytes total.
+        assert_eq!(wrapped.matches('\x1b').count(), 6);
+    }
+
+    #[test]
+    fn tmux_passthrough_payload_without_escapes() {
+        let wrapped = tmux_passthrough("plain");
+        assert_eq!(wrapped, "\x1bPtmux;plain\x1b\\");
+    }
 }

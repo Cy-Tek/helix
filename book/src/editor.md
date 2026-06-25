@@ -51,6 +51,7 @@
 | `auto-info` | Whether to display info boxes | `true` |
 | `true-color` | Whether to override automatic detection of terminal truecolor support in the event of a false negative | `false` |
 | `undercurl` | Whether to override automatic detection of terminal undercurl support in the event of a false negative | `false` |
+| `force-enable-kitty-graphics` | Whether to force-enable the kitty graphics protocol when auto-detection fails (e.g. inside tmux). Requires the host terminal to support it | `false` |
 | `rulers` | List of column positions at which to display the rulers. Can be overridden by language specific `rulers` in `languages.toml` file | `[]` |
 | `bufferline` | Renders a line at the top of the editor displaying open buffers. Can be `always`, `never` or `multiple` (only shown if more than one buffer is in use) | `"never"` |
 | `color-modes` | Whether to color the mode indicator with different colors depending on the mode itself | `false` |
@@ -280,6 +281,72 @@ Example
 [editor.buffer-picker]
 start-position = "previous"
 ```
+
+### `[editor.markdown-preview]` Section
+
+Options for the `:markdown-preview` (alias `:mdp`) command, which opens a
+full-screen, scrollable preview of the current document. ` ```mermaid ` fenced
+code blocks and standalone image links are rendered as inline images on
+terminals that support the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+(Kitty, Ghostty, WezTerm, Konsole, and others); on other terminals a text
+placeholder is shown instead.
+
+While the preview is open: `j`/`k` (or the arrow keys and mouse wheel) scroll,
+`Ctrl-d`/`Ctrl-u` scroll by half a page, `g`/`G` jump to the top/bottom, `r`
+re-renders (re-running the diagram renderer), and `q` or `Esc` closes it.
+
+Mermaid diagrams are produced by an external renderer. By default this is
+`mmdc` from [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)
+(`npm install -g @mermaid-js/mermaid-cli`). The renderer is invoked as
+`<diagram-renderer> <diagram-renderer-args...> -i <input.mmd> -o <output.png>`,
+so any tool accepting that calling convention works.
+
+| Key | Description | Default |
+|--|--|---------|
+| `diagram-renderer` | Command used to render mermaid diagrams to an image | `"mmdc"` |
+| `diagram-renderer-args` | Extra arguments inserted before `-i`/`-o` (e.g. a theme or config) | `[]` |
+| `max-width` | Maximum width, in columns, of the centered preview content | `100` |
+
+Example:
+
+```toml
+[editor.markdown-preview]
+# Use a dark mermaid theme with a transparent background.
+diagram-renderer-args = ["-t", "dark", "-b", "transparent"]
+max-width = 120
+```
+
+If `mmdc` is not installed, you can render via `npx` without a global install:
+
+```toml
+[editor.markdown-preview]
+diagram-renderer = "npx"
+diagram-renderer-args = ["-y", "@mermaid-js/mermaid-cli"]
+```
+
+#### Inside tmux
+
+tmux masks the host terminal, so two extra things are needed for images to
+appear:
+
+1. Enable passthrough in tmux so it forwards the graphics escape sequences to the
+   host terminal (requires tmux 3.3+):
+
+   ```tmux
+   set -g allow-passthrough on
+   ```
+
+2. Helix recognizes Ghostty/Kitty inside tmux automatically (via the host's
+   environment variables), but if auto-detection fails you can force it on:
+
+   ```toml
+   [editor]
+   force-enable-kitty-graphics = true
+   ```
+
+Note: through tmux, images are placed directly rather than tracked by tmux, so a
+full tmux redraw (`prefix` + `r`, a resize, or switching panes) may briefly drop
+a diagram until Helix repaints — scroll or press `r` to refresh.
 
 ### `[editor.auto-pairs]` Section
 
