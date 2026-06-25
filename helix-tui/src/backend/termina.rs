@@ -718,28 +718,34 @@ impl Backend for TerminaBackend {
             return Ok(());
         }
 
-        write!(
-            self.terminal,
-            "{}",
-            Csi::Cursor(csi::Cursor::Position {
-                line: OneBased::from_zero_based(image.area.y),
-                col: OneBased::from_zero_based(image.area.x),
-            })
-        )?;
-
+        // Transmit the image and create a *virtual placement* (`U=1`) sized to `c`×`r` cells. The
+        // image is positioned not by the cursor but by Unicode placeholder cells written into the
+        // text grid (see `helix_term::ui::kitty_graphics`), so it scrolls, clips and redraws with
+        // its pane — which is what makes it work through tmux.
         let encoded = encode_base64(&image.png);
         let mut chunks = encoded.as_bytes().chunks(4096).peekable();
+        let mut first = true;
         while let Some(chunk) = chunks.next() {
             let more_chunks = chunks.peek().is_some();
-            let sequence = format!(
-                "\x1b_Ga=T,f=100,i={},q=2,c={},r={},m={};{}\x1b\\",
-                image.id,
-                image.area.width,
-                image.area.height,
-                if more_chunks { 1 } else { 0 },
-                std::str::from_utf8(chunk).unwrap_or_default(),
-            );
+            // Control keys only need to be sent with the first chunk.
+            let sequence = if first {
+                format!(
+                    "\x1b_Ga=T,U=1,f=100,i={},q=2,c={},r={},m={};{}\x1b\\",
+                    image.id,
+                    image.area.width,
+                    image.area.height,
+                    if more_chunks { 1 } else { 0 },
+                    std::str::from_utf8(chunk).unwrap_or_default(),
+                )
+            } else {
+                format!(
+                    "\x1b_Gm={};{}\x1b\\",
+                    if more_chunks { 1 } else { 0 },
+                    std::str::from_utf8(chunk).unwrap_or_default(),
+                )
+            };
             self.write_graphics(&sequence)?;
+            first = false;
         }
 
         Ok(())

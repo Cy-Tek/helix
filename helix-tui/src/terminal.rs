@@ -31,9 +31,11 @@ pub enum MediaOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MediaImageKey {
     id: u32,
-    area: Rect,
-    width: u32,
-    height: u32,
+    /// Placement size in cells. Screen position is intentionally excluded: images are positioned
+    /// by Unicode placeholder cells in the text grid, so scrolling moves them without needing the
+    /// image data to be re-transmitted.
+    cols: u16,
+    rows: u16,
     payload_hash: u64,
 }
 
@@ -41,9 +43,8 @@ impl From<&MediaImage> for MediaImageKey {
     fn from(image: &MediaImage) -> Self {
         Self {
             id: image.id,
-            area: image.area,
-            width: image.width,
-            height: image.height,
+            cols: image.area.width,
+            rows: image.area.height,
             payload_hash: image.payload_hash,
         }
     }

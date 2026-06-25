@@ -344,9 +344,9 @@ appear:
    force-enable-kitty-graphics = true
    ```
 
-Note: through tmux, images are placed directly rather than tracked by tmux, so a
-full tmux redraw (`prefix` + `r`, a resize, or switching panes) may briefly drop
-a diagram until Helix repaints — scroll or press `r` to refresh.
+Images are placed using the kitty protocol's Unicode placeholder mechanism, so
+tmux tracks them like ordinary text — they scroll, clip to the pane and survive
+redraws — and the same mechanism works natively in kitty/Ghostty without tmux.
 
 ### `[editor.auto-pairs]` Section
 

@@ -34,6 +34,7 @@ use crate::{
     ctrl, key,
     ui::{
         image_preview::{decode_image_preview, ImagePreview, CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH},
+        kitty_graphics,
         markdown::Markdown,
         text::required_size,
     },
@@ -47,13 +48,10 @@ pub const ID: &str = "markdown-preview";
 /// screen at once without colliding with each other or with the picker/file-tree preview (id 1).
 const IMAGE_ID_BASE: u32 = 1000;
 
-/// An image embedded in the preview, decoded just enough to know its natural size.
+/// An image embedded in the preview. The raw bytes are kept and scaled on demand (the natural
+/// size is re-derived by the scaler), but we validate up front that they decode.
 enum BlockImage {
-    Ready {
-        bytes: Vec<u8>,
-        width: u32,
-        height: u32,
-    },
+    Ready { bytes: Vec<u8> },
     Error(String),
 }
 
@@ -61,11 +59,7 @@ impl BlockImage {
     fn from_bytes(bytes: Vec<u8>) -> Self {
         match image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format() {
             Ok(reader) => match reader.into_dimensions() {
-                Ok((width, height)) if width > 0 && height > 0 => BlockImage::Ready {
-                    bytes,
-                    width,
-                    height,
-                },
+                Ok((width, height)) if width > 0 && height > 0 => BlockImage::Ready { bytes },
                 Ok(_) => BlockImage::Error("image has zero size".to_string()),
                 Err(err) => BlockImage::Error(format!("invalid image: {err}")),
             },
@@ -309,9 +303,10 @@ impl Component for MarkdownPreview {
             })
             .collect();
 
-        // Maximum image height: leave room so a diagram can always be scrolled fully into view,
-        // plus its padding and caption rows.
-        let max_img_rows = viewport_height.saturating_sub(4).max(1);
+        // Box images into at most the viewport height (minus a caption row). Diagrams taller than
+        // this are scaled down to fit the width; partial rows are drawn while scrolling, so even a
+        // tall diagram is fully viewable.
+        let max_img_rows = viewport_height.saturating_sub(1).max(1);
 
         // Build the layout plan and total height.
         let mut plans: Vec<Plan> = Vec::with_capacity(blocks.len());
@@ -333,15 +328,35 @@ impl Component for MarkdownPreview {
                             height,
                         }
                     }
-                    BlockImage::Ready { width, height, .. } if supports_graphics => {
-                        let img_rows =
-                            image_rows(*width, *height, content_width, cell_w, cell_h, max_img_rows);
-                        Plan::Image {
+                    BlockImage::Ready { .. } if supports_graphics => {
+                        // Scale to fit (content_width × max_img_rows), preserving aspect, and use
+                        // the resulting cell dimensions for both layout and placement.
+                        match get_scaled(
+                            cache,
+                            blocks,
                             index,
-                            img_cols: content_width,
-                            img_rows,
-                            label: media.label.clone(),
-                            height: img_rows + 3,
+                            content_width,
+                            max_img_rows,
+                            cell_w,
+                            cell_h,
+                        ) {
+                            Some(preview) => Plan::Image {
+                                index,
+                                img_cols: preview.area.width,
+                                img_rows: preview.area.height,
+                                label: media.label.clone(),
+                                // image rows + a caption row + a blank spacer
+                                height: preview.area.height + 2,
+                            },
+                            None => {
+                                let text = Text::from(format!("⚠ could not render {}", media.label));
+                                let height = required_size(&text, content_width).1 + 1;
+                                Plan::Note {
+                                    text,
+                                    style: error_style,
+                                    height,
+                                }
+                            }
                         }
                     }
                     BlockImage::Ready { .. } => {
@@ -396,59 +411,58 @@ impl Component for MarkdownPreview {
                     label,
                     ..
                 } => {
-                    let fully_visible = top >= win_top && bottom <= win_bottom;
-                    if fully_visible && *img_rows > 0 {
-                        let screen_top = content.y + (top - win_top) as u16;
-                        let box_area = Rect::new(content.x, screen_top, content.width, height as u16);
-                        // Clear any stale text under the image.
-                        surface.clear_with(box_area, background);
+                    let id = IMAGE_ID_BASE + *index as u32;
+                    // The image occupies content rows [top, top + img_rows); the caption sits on
+                    // the row just below it. Only the rows intersecting the viewport are drawn, so
+                    // a partially-scrolled (or very tall) diagram still renders correctly.
+                    let img_top = top;
+                    let img_bottom = img_top + u32::from(*img_rows);
+                    let vis_start = img_top.max(win_top);
+                    let vis_end = img_bottom.min(win_bottom);
 
-                        match get_scaled(cache, blocks, *index, *img_cols, *img_rows, cell_w, cell_h)
-                        {
-                            Some(preview) => {
-                                let img_area = Rect::new(
-                                    content.x + preview.area.x,
-                                    screen_top + 1 + preview.area.y,
-                                    preview.area.width,
-                                    preview.area.height,
-                                );
-                                ctx.media.push(MediaCommand::Image(MediaImage {
-                                    id: IMAGE_ID_BASE + *index as u32,
-                                    area: img_area,
-                                    width: preview.width,
-                                    height: preview.height,
-                                    payload_hash: preview.payload_hash,
-                                    png: preview.png.clone(),
-                                }));
-                                draw_centered(
-                                    surface,
-                                    content,
-                                    screen_top + 1 + *img_rows,
-                                    label,
-                                    caption_style,
-                                );
-                            }
-                            None => {
-                                draw_centered(
-                                    surface,
-                                    content,
-                                    screen_top + height as u16 / 2,
-                                    &format!("⚠ could not render {label}"),
-                                    error_style,
-                                );
-                            }
-                        }
-                    } else {
-                        // Partially scrolled: show a placeholder rather than a clipped image.
-                        let first_visible = top.max(win_top);
-                        let screen_y = content.y + (first_visible - win_top) as u16;
-                        draw_centered(
+                    if vis_end > vis_start && *img_cols > 0 {
+                        let image_row_start = (vis_start - img_top) as u16;
+                        let n_rows = (vis_end - vis_start) as u16;
+                        let screen_y = content.y + (vis_start - win_top) as u16;
+                        let x0 = content.x + content.width.saturating_sub(*img_cols) / 2;
+
+                        // Display half: write the visible placeholder rows into the text grid.
+                        kitty_graphics::place_image_rows(
                             surface,
-                            content,
+                            x0,
                             screen_y,
-                            &format!("▣ {label} — scroll to view"),
-                            muted_style,
+                            *img_cols,
+                            image_row_start,
+                            n_rows,
+                            id,
                         );
+
+                        // Transmit half: (re-)transmit the image + virtual placement. Keyed on
+                        // content (not position), so scrolling within view does not re-transmit.
+                        if let Some(preview) = get_scaled(
+                            cache,
+                            blocks,
+                            *index,
+                            content_width,
+                            max_img_rows,
+                            cell_w,
+                            cell_h,
+                        ) {
+                            ctx.media.push(MediaCommand::Image(MediaImage {
+                                id,
+                                area: Rect::new(0, 0, *img_cols, *img_rows),
+                                width: preview.width,
+                                height: preview.height,
+                                payload_hash: preview.payload_hash,
+                                png: preview.png.clone(),
+                            }));
+                        }
+                    }
+
+                    let caption_row = img_bottom;
+                    if caption_row >= win_top && caption_row < win_bottom {
+                        let screen_y = content.y + (caption_row - win_top) as u16;
+                        draw_centered(surface, content, screen_y, label, caption_style);
                     }
                 }
             }
@@ -505,22 +519,6 @@ fn draw_centered(surface: &mut Surface, area: Rect, y: u16, message: &str, style
     let len = message.chars().count().min(width);
     let x = area.x + ((width - len) / 2) as u16;
     surface.set_stringn(x, y, message, width, style);
-}
-
-/// Compute the image height in rows for a media block, fitting the content width and capping the
-/// height so the whole diagram can be scrolled into view.
-fn image_rows(
-    width: u32,
-    height: u32,
-    content_width: u16,
-    cell_w: u32,
-    cell_h: u32,
-    max_rows: u16,
-) -> u16 {
-    let target_width_px = u32::from(content_width) * cell_w;
-    let scaled_height_px = target_width_px.saturating_mul(height) / width.max(1);
-    let rows = scaled_height_px.div_ceil(cell_h.max(1));
-    (rows.clamp(1, u32::from(max_rows))) as u16
 }
 
 /// Fetch (and cache) the scaled image for a media block at the requested cell size.
@@ -822,14 +820,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn image_rows_preserves_aspect_within_caps() {
-        // 200x100 (2:1) into 20 columns at 16x32 px cells.
-        // width px = 320; height px = 160; rows = ceil(160/32) = 5.
-        assert_eq!(image_rows(200, 100, 20, 16, 32, 30), 5);
-        // Capped by max_rows.
-        assert_eq!(image_rows(100, 1000, 20, 16, 32, 4), 4);
-        // Never zero.
-        assert_eq!(image_rows(10000, 1, 20, 16, 32, 30), 1);
-    }
 }

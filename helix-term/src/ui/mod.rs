@@ -4,6 +4,7 @@ pub(crate) mod editor;
 pub(crate) mod file_tree;
 mod image_preview;
 mod info;
+pub(crate) mod kitty_graphics;
 pub mod lsp;
 mod markdown;
 pub(crate) mod markdown_preview;
