@@ -1612,6 +1612,66 @@ fn get_character_info(
     Ok(())
 }
 
+/// Open a full-screen markdown preview of the current document, rendering mermaid diagrams as
+/// inline images on terminals that support the kitty graphics protocol.
+fn markdown_preview(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    use crate::ui::markdown_preview::{mermaid::MermaidRenderer, MarkdownPreview};
+
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let config = cx.editor.config();
+    let renderer = MermaidRenderer::from_config(&config.markdown_preview);
+    let max_width = config.markdown_preview.max_width;
+
+    let doc = doc!(cx.editor);
+    let contents = doc.text().to_string();
+    let path = doc.path().map(|path| path.to_path_buf());
+
+    let base_dir = path
+        .as_ref()
+        .and_then(|path| path.parent())
+        .map(|parent| parent.to_path_buf());
+    let title = path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("[scratch]"));
+
+    let renderer_available = renderer.is_available();
+    let renderer_command = renderer.command().to_string();
+    let mermaid_present = contents.contains("```mermaid");
+    let syn_loader = cx.editor.syn_loader.clone();
+
+    // Rendering mermaid diagrams shells out to an external process; keep it off the async reactor.
+    let preview = tokio::task::block_in_place(|| {
+        MarkdownPreview::new(contents, base_dir, renderer, syn_loader, title, max_width)
+    });
+
+    if mermaid_present && !renderer_available {
+        cx.editor.set_status(format!(
+            "markdown-preview: diagram renderer '{renderer_command}' not found; diagrams will show an error"
+        ));
+    }
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                compositor.replace_or_push(crate::ui::markdown_preview::ID, preview);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+
+    Ok(())
+}
+
 /// Reload the [`Document`] from its source file.
 fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
@@ -3622,6 +3682,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["rl"],
         doc: "Discard changes and reload from the source file.",
         fun: reload,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "markdown-preview",
+        aliases: &["mdp"],
+        doc: "Open a full-screen markdown preview of the current document, rendering mermaid diagrams as inline images.",
+        fun: markdown_preview,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

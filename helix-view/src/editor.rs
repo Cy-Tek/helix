@@ -386,6 +386,10 @@ pub struct Config {
     pub true_color: bool,
     /// Set to `true` to override automatic detection of terminal undercurl support in the event of a false negative. Defaults to `false`.
     pub undercurl: bool,
+    /// Set to `true` to force-enable the kitty graphics protocol when automatic detection fails,
+    /// for example inside tmux where the host terminal is masked. Requires the host terminal to
+    /// actually support kitty graphics (and, under tmux, `allow-passthrough on`). Defaults to `false`.
+    pub force_enable_kitty_graphics: bool,
     /// Search configuration.
     #[serde(default)]
     pub search: SearchConfig,
@@ -444,6 +448,8 @@ pub struct Config {
     /// Whether to enable Kitty Keyboard Protocol
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
     pub buffer_picker: BufferPickerConfig,
+    /// Markdown preview configuration.
+    pub markdown_preview: MarkdownPreviewConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
 }
@@ -577,6 +583,38 @@ pub fn get_terminal_provider() -> Option<TerminalConfig> {
     }
 
     None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct MarkdownPreviewConfig {
+    /// Command used to render mermaid diagrams to an image. The command receives the diagram
+    /// source on a temporary `.mmd` file and is expected to write an image (PNG by default).
+    /// Defaults to `mmdc` (the `@mermaid-js/mermaid-cli` renderer).
+    pub diagram_renderer: String,
+    /// Extra arguments passed to the diagram renderer, inserted before the generated
+    /// `-i <input> -o <output>` arguments. Use this to e.g. pass a custom mermaid config or theme.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagram_renderer_args: Vec<String>,
+    /// Maximum width, in columns, of the rendered preview content. The content is centered within
+    /// the available width. Defaults to the full available width (no fixed cap).
+    pub max_width: u16,
+    /// Puppeteer scale factor passed to the diagram renderer via `--scale`. Higher values produce
+    /// sharper images when the terminal uses high-DPI or large cell sizes, at the cost of slower
+    /// renders. Defaults to 3.
+    pub diagram_scale: u8,
+}
+
+impl Default for MarkdownPreviewConfig {
+    fn default() -> Self {
+        Self {
+            diagram_renderer: String::from("mmdc"),
+            diagram_renderer_args: Vec::new(),
+            max_width: u16::MAX,
+            diagram_scale: 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1213,9 +1251,11 @@ impl Default for Config {
             end_of_line_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
             clipboard_provider: ClipboardProvider::default(),
             editor_config: true,
+            force_enable_kitty_graphics: false,
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
+            markdown_preview: MarkdownPreviewConfig::default(),
             insecure: false,
         }
     }

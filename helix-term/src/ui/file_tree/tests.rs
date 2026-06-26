@@ -236,6 +236,56 @@ fn expanding_directory_loads_only_that_directorys_direct_children() {
 }
 
 #[test]
+fn reveal_path_expands_all_ancestor_directories_and_selects_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/ui/components")).unwrap();
+    std::fs::write(dir.path().join("src/ui/components/button.rs"), "").unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+
+    let mut tree = super::FileTree::new(dir.path().to_path_buf());
+    let target = dir.path().join("src/ui/components/button.rs");
+
+    tree.reveal_path_in_tree(&target);
+
+    assert_eq!(tree.model.selected_path(), Some(target.as_path()));
+    assert!(tree.model.is_expanded(&dir.path().join("src")));
+    assert!(tree.model.is_expanded(&dir.path().join("src/ui")));
+    assert!(tree.model.is_expanded(&dir.path().join("src/ui/components")));
+}
+
+#[test]
+fn reveal_path_selects_shallow_file_without_expanding() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+
+    let mut tree = super::FileTree::new(dir.path().to_path_buf());
+    let target = dir.path().join("README.md");
+
+    tree.reveal_path_in_tree(&target);
+
+    assert_eq!(tree.model.selected_path(), Some(target.as_path()));
+}
+
+#[test]
+fn reveal_path_outside_root_is_a_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.rs"), "").unwrap();
+
+    let mut tree = super::FileTree::new(dir.path().to_path_buf());
+    let outside = PathBuf::from("/tmp/some_other_file.rs");
+    let original_selected = tree.model.selected_path().map(|p| p.to_path_buf());
+
+    tree.reveal_path_in_tree(&outside);
+
+    assert_eq!(
+        tree.model.selected_path().map(|p| p.to_path_buf()),
+        original_selected
+    );
+}
+
+#[test]
 fn loader_respects_hidden_toggle() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(".env"), "").unwrap();

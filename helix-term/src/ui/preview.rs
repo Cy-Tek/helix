@@ -39,9 +39,20 @@ pub(crate) fn render_preview(
 
     if let Some(image) = preview.image() {
         if supports_kitty_graphics {
+            // Place via Unicode placeholder cells (so the image is tracked by the cell grid and
+            // works through tmux); transmit the data + virtual placement through the media channel.
+            crate::ui::kitty_graphics::place_image_rows(
+                surface,
+                image.area.x,
+                image.area.y,
+                image.area.width,
+                0,
+                image.area.height,
+                PREVIEW_IMAGE_ID,
+            );
             media.push(MediaCommand::Image(MediaImage {
                 id: PREVIEW_IMAGE_ID,
-                area: image.area,
+                area: Rect::new(0, 0, image.area.width, image.area.height),
                 width: image.width,
                 height: image.height,
                 payload_hash: image.payload_hash,

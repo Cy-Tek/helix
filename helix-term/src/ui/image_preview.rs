@@ -113,13 +113,7 @@ pub fn decode_image_preview(
         cell_pixel_width,
         cell_pixel_height,
     )?;
-    let is_upscaling = layout.width > original_width || layout.height > original_height;
-    let filter = if is_upscaling {
-        image::imageops::FilterType::Nearest
-    } else {
-        image::imageops::FilterType::Lanczos3
-    };
-    let scaled = image.resize_exact(layout.width, layout.height, filter);
+    let scaled = image.resize_exact(layout.width, layout.height, image::imageops::FilterType::Lanczos3);
 
     let mut png = Cursor::new(Vec::new());
     scaled.write_to(&mut png, image::ImageFormat::Png)?;

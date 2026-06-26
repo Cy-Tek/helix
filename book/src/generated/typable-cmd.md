@@ -55,6 +55,7 @@
 | `:encoding` | Set encoding. Based on `https://encoding.spec.whatwg.org`. |
 | `:character-info`, `:char` | Get info about the character under the primary cursor. |
 | `:reload`, `:rl` | Discard changes and reload from the source file. |
+| `:markdown-preview`, `:mdp` | Open a full-screen markdown preview of the current document, rendering mermaid diagrams as inline images. |
 | `:reload-all`, `:rla` | Discard changes and reload all documents from the source files. |
 | `:update`, `:u` | Write changes only if the file has been modified. |
 | `:lsp-workspace-command` | Open workspace command picker |
