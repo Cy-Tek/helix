@@ -427,6 +427,7 @@ impl MappableCommand {
         file_picker_in_current_buffer_directory, "Open file picker at current buffer's directory",
         file_picker_in_current_directory, "Open file picker at current working directory",
         file_explorer, "Open tree file manager at active project root",
+        file_explorer_reveal_current_buffer, "Open tree file manager at project root, revealing the current buffer",
         file_explorer_in_current_buffer_directory, "Open tree file manager at current buffer's directory",
         file_explorer_in_current_directory, "Open tree file manager at current working directory",
         code_action, "Perform code action",
@@ -3808,6 +3809,23 @@ fn file_explorer(cx: &mut Context) {
     }
 
     cx.push_layer(Box::new(overlaid(ui::file_tree::FileTree::new(root))));
+}
+
+fn file_explorer_reveal_current_buffer(cx: &mut Context) {
+    let root = workspace_file_tree_root(cx.editor);
+    if !root.exists() {
+        cx.editor.set_error("Workspace directory does not exist");
+        return;
+    }
+
+    let doc_path = doc!(cx.editor).path().map(|p| p.to_path_buf());
+
+    let mut tree = ui::file_tree::FileTree::new(root);
+    if let Some(path) = doc_path {
+        tree.reveal_path_in_tree(&path);
+    }
+
+    cx.push_layer(Box::new(overlaid(tree)));
 }
 
 fn file_explorer_in_current_buffer_directory(cx: &mut Context) {

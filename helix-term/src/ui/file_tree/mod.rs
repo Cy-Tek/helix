@@ -162,6 +162,51 @@ impl FileTree {
         EventResult::Consumed(None)
     }
 
+    pub fn reveal_path_in_tree(&mut self, path: &Path) {
+        let root = self.model.root().to_path_buf();
+        if !path.starts_with(&root) {
+            return;
+        }
+
+        // Collect the ancestor directories between root (exclusive) and path (exclusive),
+        // ordered shallowest-first so we load and expand from the root outward.
+        let ancestors: Vec<PathBuf> = {
+            let mut v: Vec<PathBuf> = path
+                .ancestors()
+                .skip(1) // skip path itself
+                .take_while(|a| *a != root.as_path())
+                .map(|a| a.to_path_buf())
+                .collect();
+            v.reverse();
+            v
+        };
+
+        for dir in &ancestors {
+            if !self.model.children_loaded(dir) {
+                // dir must be visible at this point because its parent was just expanded;
+                // use its depth to correctly offset the children we're about to splice in.
+                let depth = self
+                    .model
+                    .visible_entries()
+                    .iter()
+                    .find(|e| e.path == *dir)
+                    .map(|e| e.depth)
+                    .unwrap_or(0);
+                let options = self.direct_load_options();
+                if let Ok(mut children) = load_tree_entries(dir, &options) {
+                    for child in &mut children {
+                        child.depth += depth + 1;
+                    }
+                    self.model.replace_children(dir, children);
+                }
+            }
+            // Expand before the next iteration so the next level becomes visible.
+            self.model.expand(dir);
+        }
+
+        self.model.reveal_path(path);
+    }
+
     fn expand_selected_directory(&mut self) {
         let Some(entry) = self.model.selected_entry().cloned() else {
             return;

@@ -115,6 +115,7 @@
 | `file_picker_in_current_buffer_directory` | Open file picker at current buffer's directory | normal: `` <space>f. ``, select: `` <space>f. `` |
 | `file_picker_in_current_directory` | Open file picker at current working directory | normal: `` <space>fF ``, select: `` <space>fF `` |
 | `file_explorer` | Open tree file manager at active project root | normal: `` <space>fe ``, select: `` <space>fe `` |
+| `file_explorer_reveal_current_buffer` | Open tree file manager at project root, revealing the current buffer |  |
 | `file_explorer_in_current_buffer_directory` | Open tree file manager at current buffer's directory |  |
 | `file_explorer_in_current_directory` | Open tree file manager at current working directory | normal: `` <space>fE ``, select: `` <space>fE `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
