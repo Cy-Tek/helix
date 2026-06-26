@@ -65,6 +65,7 @@ impl From<io::Error> for MermaidError {
 pub struct MermaidRenderer {
     command: String,
     args: Vec<String>,
+    scale: u8,
 }
 
 impl MermaidRenderer {
@@ -72,6 +73,7 @@ impl MermaidRenderer {
         Self {
             command: config.diagram_renderer.clone(),
             args: config.diagram_renderer_args.clone(),
+            scale: config.diagram_scale,
         }
     }
 
@@ -148,6 +150,8 @@ impl MermaidRenderer {
         let mut command = Command::new(&self.command);
         command
             .args(&self.args)
+            .arg("--scale")
+            .arg(self.scale.to_string())
             .arg("-i")
             .arg(input)
             .arg("-o")
@@ -173,6 +177,7 @@ mod tests {
         MermaidRenderer {
             command: command.to_string(),
             args: Vec::new(),
+            scale: 1,
         }
     }
 

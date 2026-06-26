@@ -298,7 +298,7 @@ impl Component for MarkdownPreview {
         let texts: Vec<Option<Text>> = blocks
             .iter()
             .map(|block| match block {
-                PreviewBlock::Markdown(md) => Some(md.parse(Some(theme))),
+                PreviewBlock::Markdown(md) => Some(md.parse(Some(theme), Some(content_width))),
                 PreviewBlock::Media(_) => None,
             })
             .collect();
@@ -345,8 +345,8 @@ impl Component for MarkdownPreview {
                                 img_cols: preview.area.width,
                                 img_rows: preview.area.height,
                                 label: media.label.clone(),
-                                // image rows + a caption row + a blank spacer
-                                height: preview.area.height + 2,
+                                // top padding + image rows + a caption row + a blank spacer
+                                height: preview.area.height + 3,
                             },
                             None => {
                                 let text = Text::from(format!("⚠ could not render {}", media.label));
@@ -412,10 +412,11 @@ impl Component for MarkdownPreview {
                     ..
                 } => {
                     let id = IMAGE_ID_BASE + *index as u32;
-                    // The image occupies content rows [top, top + img_rows); the caption sits on
-                    // the row just below it. Only the rows intersecting the viewport are drawn, so
-                    // a partially-scrolled (or very tall) diagram still renders correctly.
-                    let img_top = top;
+                    // The image occupies content rows [top+1, top+1+img_rows); one row of top
+                    // padding separates it from the preceding block. The caption sits on the row
+                    // just below the image. Only rows intersecting the viewport are drawn, so a
+                    // partially-scrolled (or very tall) diagram still renders correctly.
+                    let img_top = top + 1;
                     let img_bottom = img_top + u32::from(*img_rows);
                     let vis_start = img_top.max(win_top);
                     let vis_end = img_bottom.min(win_bottom);
@@ -558,8 +559,9 @@ struct Special {
     kind: SpecialKind,
 }
 
-/// Split `contents` into an ordered list of blocks, rendering mermaid diagrams and loading image
-/// references as it goes.
+/// Split `contents` into an ordered list of blocks. All mermaid diagram renders are kicked off in
+/// parallel threads immediately, then image files are loaded, and finally the thread results are
+/// joined in order to assemble the final block list.
 fn parse_blocks(
     contents: &str,
     base_dir: Option<&Path>,
@@ -567,6 +569,25 @@ fn parse_blocks(
     config_loader: &Arc<ArcSwap<syntax::Loader>>,
 ) -> Vec<PreviewBlock> {
     let specials = find_special_ranges(contents);
+
+    // Spawn one thread per mermaid diagram so all renders run concurrently.
+    // Image specials get None; they're fast file reads done inline below.
+    let handles: Vec<Option<std::thread::JoinHandle<BlockImage>>> = specials
+        .iter()
+        .map(|s| match &s.kind {
+            SpecialKind::Mermaid(source) => {
+                let renderer = renderer.clone();
+                let source = source.clone();
+                Some(std::thread::spawn(move || {
+                    match renderer.render_png(&source) {
+                        Ok(bytes) => BlockImage::from_bytes(bytes),
+                        Err(err) => BlockImage::Error(err.to_string()),
+                    }
+                }))
+            }
+            SpecialKind::Image { .. } => None,
+        })
+        .collect();
 
     let mut blocks = Vec::new();
     let mut cursor = 0usize;
@@ -579,11 +600,24 @@ fn parse_blocks(
         }
     };
 
-    for special in specials {
+    for (special, handle) in specials.into_iter().zip(handles) {
         if special.range.start > cursor {
             push_text(&mut blocks, &contents[cursor..special.range.start]);
         }
-        blocks.push(build_media_block(special.kind, base_dir, renderer));
+        let block = match (special.kind, handle) {
+            (SpecialKind::Mermaid(_), Some(handle)) => {
+                let content = handle
+                    .join()
+                    .unwrap_or_else(|_| BlockImage::Error("render thread panicked".to_string()));
+                PreviewBlock::Media(MediaBlock {
+                    label: "mermaid diagram".to_string(),
+                    content,
+                })
+            }
+            (SpecialKind::Image { url, alt }, None) => build_image_block(url, alt, base_dir),
+            _ => unreachable!(),
+        };
+        blocks.push(block);
         cursor = special.range.end;
     }
     if cursor < contents.len() {
@@ -593,36 +627,18 @@ fn parse_blocks(
     blocks
 }
 
-fn build_media_block(
-    kind: SpecialKind,
-    base_dir: Option<&Path>,
-    renderer: &MermaidRenderer,
-) -> PreviewBlock {
-    match kind {
-        SpecialKind::Mermaid(source) => {
-            let content = match renderer.render_png(&source) {
-                Ok(bytes) => BlockImage::from_bytes(bytes),
-                Err(err) => BlockImage::Error(err.to_string()),
-            };
-            PreviewBlock::Media(MediaBlock {
-                label: "mermaid diagram".to_string(),
-                content,
-            })
+fn build_image_block(url: String, alt: String, base_dir: Option<&Path>) -> PreviewBlock {
+    let content = if url.starts_with("http://") || url.starts_with("https://") {
+        BlockImage::Error(format!("remote images are not supported: {url}"))
+    } else {
+        let path = resolve_path(&url, base_dir);
+        match std::fs::read(&path) {
+            Ok(bytes) => BlockImage::from_bytes(bytes),
+            Err(err) => BlockImage::Error(format!("could not read {}: {err}", path.display())),
         }
-        SpecialKind::Image { url, alt } => {
-            let content = if url.starts_with("http://") || url.starts_with("https://") {
-                BlockImage::Error(format!("remote images are not supported: {url}"))
-            } else {
-                let path = resolve_path(&url, base_dir);
-                match std::fs::read(&path) {
-                    Ok(bytes) => BlockImage::from_bytes(bytes),
-                    Err(err) => BlockImage::Error(format!("could not read {}: {err}", path.display())),
-                }
-            };
-            let label = if alt.trim().is_empty() { url } else { alt };
-            PreviewBlock::Media(MediaBlock { label, content })
-        }
-    }
+    };
+    let label = if alt.trim().is_empty() { url } else { alt };
+    PreviewBlock::Media(MediaBlock { label, content })
 }
 
 fn resolve_path(url: &str, base_dir: Option<&Path>) -> PathBuf {

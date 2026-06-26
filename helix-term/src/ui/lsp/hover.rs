@@ -80,7 +80,7 @@ impl Component for Hover {
         // show header and border only when more than one results
         if let Some(header) = header {
             // header LSP Name
-            let header = header.parse(Some(&cx.editor.theme));
+            let header = header.parse(Some(&cx.editor.theme), None);
             let header = Paragraph::new(&header);
             header.render(area.with_height(HEADER_HEIGHT), surface);
 
@@ -95,7 +95,7 @@ impl Component for Hover {
         }
 
         // hover content
-        let contents = contents.parse(Some(&cx.editor.theme));
+        let contents = contents.parse(Some(&cx.editor.theme), None);
         let contents_area = area.clip_top(if self.has_header() {
             HEADER_HEIGHT + SEPARATOR_HEIGHT
         } else {
@@ -115,13 +115,13 @@ impl Component for Hover {
         let header_width = header
             .as_ref()
             .map(|header| {
-                let header = header.parse(None);
+                let header = header.parse(None, Some(max_text_width));
                 let (width, _height) = crate::ui::text::required_size(&header, max_text_width);
                 width
             })
             .unwrap_or_default();
 
-        let contents = contents.parse(None);
+        let contents = contents.parse(None, Some(max_text_width));
         let (content_width, content_height) =
             crate::ui::text::required_size(&contents, max_text_width);
 

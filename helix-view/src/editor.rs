@@ -598,8 +598,12 @@ pub struct MarkdownPreviewConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagram_renderer_args: Vec<String>,
     /// Maximum width, in columns, of the rendered preview content. The content is centered within
-    /// the available width. Defaults to 100.
+    /// the available width. Defaults to the full available width (no fixed cap).
     pub max_width: u16,
+    /// Puppeteer scale factor passed to the diagram renderer via `--scale`. Higher values produce
+    /// sharper images when the terminal uses high-DPI or large cell sizes, at the cost of slower
+    /// renders. Defaults to 3.
+    pub diagram_scale: u8,
 }
 
 impl Default for MarkdownPreviewConfig {
@@ -607,7 +611,8 @@ impl Default for MarkdownPreviewConfig {
         Self {
             diagram_renderer: String::from("mmdc"),
             diagram_renderer_args: Vec::new(),
-            max_width: 100,
+            max_width: u16::MAX,
+            diagram_scale: 3,
         }
     }
 }

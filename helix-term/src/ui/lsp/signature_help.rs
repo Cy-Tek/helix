@@ -155,7 +155,7 @@ impl Component for SignatureHelp {
             None => return,
             Some(doc) => Markdown::new(doc.clone(), Arc::clone(&self.config_loader)),
         };
-        let sig_doc = sig_doc.parse(Some(&cx.editor.theme));
+        let sig_doc = sig_doc.parse(Some(&cx.editor.theme), None);
         let sig_doc_area = area
             .clip_top(sig_text_area.height + 2)
             .clip_bottom(u16::from(cx.editor.popup_border()));
@@ -189,7 +189,7 @@ impl Component for SignatureHelp {
         let (width, height) = match signature.signature_doc {
             Some(ref doc) => {
                 let doc_md = Markdown::new(doc.clone(), Arc::clone(&self.config_loader));
-                let doc_text = doc_md.parse(None);
+                let doc_text = doc_md.parse(None, Some(max_text_width));
                 let (doc_width, doc_height) =
                     crate::ui::text::required_size(&doc_text, max_text_width);
                 (
