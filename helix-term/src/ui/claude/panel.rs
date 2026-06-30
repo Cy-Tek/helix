@@ -4,10 +4,12 @@
 
 use helix_core::Position;
 use helix_view::agent::{AgentStatus, RightPane};
-use helix_view::graphics::{CursorKind, Rect};
+use helix_view::graphics::{CursorKind, Modifier, Rect};
 use helix_view::input::{Event, KeyEvent};
 
 use tui::buffer::Buffer as Surface;
+use tui::text::Span;
+use tui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::compositor::{Component, Context, EventResult};
 use crate::ui::claude::{spawn_new_session, ID};
@@ -50,21 +52,48 @@ impl Component for ClaudePanel {
         let base = theme.get("ui.background");
         let text_style = theme.get("ui.text");
         let selected_style = theme.get("ui.selection");
+        let border_style = theme.try_get("ui.window").unwrap_or(text_style);
+        let title_style = border_style.add_modifier(Modifier::BOLD);
         let attention_style = {
             let s = theme.try_get("ui.agent.attention");
             s.unwrap_or_else(|| theme.get("warning"))
         };
 
         surface.clear_with(area, base);
+        if area.width < 4 || area.height < 3 {
+            self.cursor = None;
+            return;
+        }
+
+        let list_focused = ctx.editor.agents.list_focused;
+
+        // Rounded border framing the whole panel, with an inset title.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style)
+            .title(Span::styled("─ ◇ Claude Agents ", title_style));
+        let inner = block.inner(area);
+        block.render(area, surface);
+
+        // Context-sensitive key hint, cut into the bottom border.
+        let hint = if ctx.editor.agents.is_empty() {
+            "n new · q/esc/C-q close"
+        } else if list_focused {
+            "j/k select · enter focus · n new · q close session · C-q quit"
+        } else {
+            "C-o session list · C-q close panel"
+        };
+        terminal::draw_border_hint(surface, area, hint, border_style);
 
         if ctx.editor.agents.is_empty() {
-            let hint = "No agents running.  n: new agent    q/esc: close";
-            let y = area.y + area.height / 2;
+            let msg = "No agents running.  Press  n  to start one.";
+            let y = inner.y + inner.height / 2;
             surface.set_string_truncated(
-                area.x + 2,
+                inner.x + 2,
                 y,
-                hint,
-                area.width.saturating_sub(4) as usize,
+                msg,
+                inner.width.saturating_sub(4) as usize,
                 |_| text_style,
                 true,
                 false,
@@ -80,9 +109,8 @@ impl Component for ClaudePanel {
             .config()
             .claude_code
             .list_width
-            .min(area.width.saturating_sub(10))
+            .min(inner.width.saturating_sub(10))
             .max(12);
-        let list_focused = ctx.editor.agents.list_focused;
         let focused_id = ctx.editor.agents.focused;
 
         let rows: Vec<(helix_view::agent::AgentSessionId, String, AgentStatus, RightPane)> = ctx
@@ -92,7 +120,7 @@ impl Component for ClaudePanel {
             .map(|s| (s.id, s.display_name.clone(), s.status.clone(), s.right_pane))
             .collect();
 
-        let list_area = area.with_width(list_width);
+        let list_area = inner.with_width(list_width);
         for (i, (id, name, status, _)) in rows.iter().enumerate() {
             let y = list_area.y + i as u16;
             if y >= list_area.bottom() {
@@ -103,7 +131,9 @@ impl Component for ClaudePanel {
             if status.is_awaiting() {
                 style = style.patch(attention_style);
             }
-            let line = format!("{} {}", status_glyph(status), name);
+            // Two spaces after the glyph so it doesn't sit squished against the
+            // name (these status symbols are drawn near the full cell width).
+            let line = format!("{}  {}", status_glyph(status), name);
             surface.set_stringn(
                 list_area.x + 1,
                 y,
@@ -113,15 +143,17 @@ impl Component for ClaudePanel {
             );
         }
 
-        // Divider column between list and content.
-        let divider_x = area.x + list_width;
-        if divider_x < area.right() {
-            for y in area.y..area.bottom() {
-                surface.set_string(divider_x, y, "│", text_style);
+        // Divider column between list and content, tee-joined to the border.
+        let divider_x = inner.x + list_width;
+        if divider_x < inner.right() {
+            for y in inner.y..inner.bottom() {
+                surface.set_string(divider_x, y, "│", border_style);
             }
+            surface.set_string(divider_x, area.y, "┬", border_style);
+            surface.set_string(divider_x, area.bottom() - 1, "┴", border_style);
         }
 
-        let content_area = area.clip_left(list_width + 1);
+        let content_area = inner.clip_left(list_width + 1);
         if content_area.width == 0 || content_area.height == 0 {
             self.cursor = None;
             return;
@@ -240,13 +272,19 @@ impl ClaudePanel {
                 }
             }
             key!(Esc) => return close_panel(),
+            k if k == ctrl!('q') => return close_panel(),
             _ => {}
         }
         EventResult::Consumed(None)
     }
 
     fn handle_terminal_key(&mut self, key: KeyEvent, ctx: &mut Context) -> EventResult {
-        // Escape hatch back to the list so the terminal can't trap the user.
+        // Close the whole panel directly, so the terminal can never trap the
+        // user. Mirrors the standalone `:terminal` detach chord (C-q).
+        if key == ctrl!('q') {
+            return close_panel();
+        }
+        // Escape hatch back to the list (to reach other sessions / new / close).
         if key == ctrl!('o') {
             ctx.editor.agents.list_focused = true;
             return EventResult::Consumed(None);

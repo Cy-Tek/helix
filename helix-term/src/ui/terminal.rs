@@ -9,13 +9,15 @@
 use std::path::PathBuf;
 
 use helix_core::Position;
-use helix_view::graphics::{CursorKind, Rect};
+use helix_view::graphics::{CursorKind, Modifier, Rect, Style};
 use helix_view::input::{Event, KeyEvent};
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::terminal::TerminalHandle;
 use helix_view::Editor;
 
 use tui::buffer::Buffer as Surface;
+use tui::text::Span;
+use tui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::compositor::{Component, Context, EventResult};
 use crate::ctrl;
@@ -116,48 +118,49 @@ impl Component for TerminalPane {
     fn render(&mut self, area: Rect, surface: &mut Surface, ctx: &mut Context) {
         let theme = &ctx.editor.theme;
         let base = theme.get("ui.background");
-        let header_style = theme.get("ui.statusline");
-        surface.clear_with(area, base);
+        let text_style = theme.get("ui.text");
+        let border_style = theme.try_get("ui.window").unwrap_or(text_style);
+        let title_style = border_style.add_modifier(Modifier::BOLD);
 
-        if area.height == 0 {
+        surface.clear_with(area, base);
+        if area.width < 4 || area.height < 3 {
             self.cursor = None;
             return;
         }
 
-        // Header row: title on the left, detach hint on the right.
         let exit_note = match self.terminal.exit_status() {
             Some(code) => {
                 self.exited = true;
-                format!(" [exited {code}] ")
+                format!("· exited {code} ")
             }
             None => String::new(),
         };
-        let header = format!(" {} {}", self.title, exit_note);
-        surface.set_stringn(
-            area.x,
-            area.y,
-            &header,
-            area.width as usize,
-            header_style,
-        );
-        let hint = if self.exited {
-            "any key: close "
-        } else {
-            "C-q: close "
-        };
-        let hint_x = area.right().saturating_sub(hint.len() as u16 + 1);
-        if hint_x > area.x + header.len() as u16 {
-            surface.set_string(hint_x, area.y, hint, header_style);
-        }
+        let title = format!("─ ◇ {} {}", self.title, exit_note);
 
-        let term_area = area.clip_top(1);
-        if term_area.height == 0 || term_area.width == 0 {
+        // Rounded border framing the terminal, with the title inset in the top
+        // border and the detach hint cut into the bottom border.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style)
+            .title(Span::styled(title, title_style));
+        let inner = block.inner(area);
+        block.render(area, surface);
+
+        let hint = if self.exited {
+            "any key close"
+        } else {
+            "C-q close"
+        };
+        draw_border_hint(surface, area, hint, border_style);
+
+        if inner.height == 0 || inner.width == 0 {
             self.cursor = None;
             return;
         }
 
-        self.terminal.resize(term_area.height, term_area.width);
-        self.cursor = render(&self.terminal, term_area, surface);
+        self.terminal.resize(inner.height, inner.width);
+        self.cursor = render(&self.terminal, inner, surface);
         if self.exited {
             self.cursor = None;
         }
@@ -208,6 +211,23 @@ fn close() -> EventResult {
     EventResult::Consumed(Some(Box::new(|compositor, _| {
         compositor.remove(ID);
     })))
+}
+
+/// Paint a short key hint into the bottom border of `area`, inset from the
+/// right corner so it reads as a label cut into the frame. Shared by the
+/// standalone terminal and the Claude agent panel.
+pub(crate) fn draw_border_hint(surface: &mut Surface, area: Rect, hint: &str, style: Style) {
+    if area.height < 1 || area.width < 6 {
+        return;
+    }
+    let label = format!(" {hint} ");
+    let label_cells = label.chars().count() as u16;
+    // Keep clear of both rounded corners.
+    if label_cells + 2 > area.width {
+        return;
+    }
+    let x = area.right().saturating_sub(label_cells + 2);
+    surface.set_stringn(x, area.bottom() - 1, &label, label_cells as usize, style);
 }
 
 /// Encode a Helix key event as the byte sequence a terminal application expects
