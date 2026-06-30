@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use helix_core::Position;
-use helix_view::agent::{AgentStatus, RightPane};
+use helix_view::agent::{AgentSessionId, AgentStatus, RightPane, WorktreeInfo};
 use helix_view::graphics::{CursorKind, Modifier, Rect};
 use helix_view::input::{Event, KeyEvent};
 
@@ -15,10 +15,11 @@ use tui::buffer::Buffer as Surface;
 use tui::text::Span;
 use tui::widgets::{Block, BorderType, Borders, Widget};
 
-use crate::compositor::{Component, Context, EventResult};
-use crate::ui::claude::{spawn_new_session, ID};
+use crate::compositor::{Component, Compositor, Context, EventResult};
+use crate::job::Callback;
+use crate::ui::claude::{spawn_new_session, spawn_session_in, ID};
 use crate::ui::spinner::Spinner;
-use crate::ui::terminal;
+use crate::ui::{terminal, Prompt, PromptEvent};
 use crate::{ctrl, key};
 
 /// The floating agent panel. Holds no session state of its own — it reads
@@ -347,8 +348,10 @@ impl ClaudePanel {
                 }
             }
             key!('w') => {
-                ctx.editor
-                    .set_status("Worktree sessions are available in a later phase");
+                let prompt = worktree_branch_prompt();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(prompt));
+                })));
             }
             key!(Tab) => {
                 if let Some(session) = ctx.editor.agents.focused_mut() {
@@ -360,6 +363,15 @@ impl ClaudePanel {
             }
             key!('q') => {
                 if let Some(id) = ctx.editor.agents.focused {
+                    // A worktree-owning session asks before deleting the tree.
+                    let worktree = ctx.editor.agents.get(id).and_then(|s| s.worktree.clone());
+                    if let Some(info) = worktree {
+                        let dirty = crate::agent::worktree::is_dirty(&info.path);
+                        let prompt = worktree_close_prompt(id, info, dirty);
+                        return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                            compositor.push(Box::new(prompt));
+                        })));
+                    }
                     ctx.editor.agents.remove(id);
                 }
                 if ctx.editor.agents.is_empty() {
@@ -397,4 +409,88 @@ fn close_panel() -> EventResult {
     EventResult::Consumed(Some(Box::new(|compositor, _| {
         compositor.remove(ID);
     })))
+}
+
+/// Prompt for a branch name, then create a git worktree and spawn an agent in
+/// it. Used by the panel's `w` action and `:claude-new-worktree`.
+pub(crate) fn worktree_branch_prompt() -> Prompt {
+    Prompt::new(
+        "new worktree branch: ".into(),
+        None,
+        crate::ui::completers::none,
+        move |cx, input, event| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            let branch = input.trim();
+            if branch.is_empty() {
+                return;
+            }
+            match crate::agent::worktree::create(cx.editor, branch) {
+                Ok(info) => {
+                    let path = info.path.clone();
+                    if let Err(err) = spawn_session_in(
+                        cx.editor,
+                        Some(branch.to_string()),
+                        path,
+                        Some(info),
+                    ) {
+                        cx.editor.set_error(err.to_string());
+                    }
+                }
+                Err(err) => cx.editor.set_error(format!("Worktree create failed: {err}")),
+            }
+        },
+    )
+}
+
+/// Confirm whether to delete an owned worktree when closing its session. The
+/// session is always closed; only the on-disk worktree is conditionally removed
+/// (force-removed only on explicit confirmation, even when dirty).
+pub(crate) fn worktree_close_prompt(id: AgentSessionId, info: WorktreeInfo, dirty: bool) -> Prompt {
+    let label = if dirty {
+        format!(
+            "worktree '{}' has uncommitted changes — delete it? [y/N]: ",
+            info.branch
+        )
+    } else {
+        format!("delete worktree '{}'? [y/N]: ", info.branch)
+    };
+    Prompt::new(
+        label.into(),
+        None,
+        crate::ui::completers::none,
+        move |cx, input, event| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            // Closing the session is unconditional; the prompt only governs the
+            // worktree directory.
+            cx.editor.agents.remove(id);
+            let delete = matches!(input.trim(), "y" | "Y" | "yes" | "YES");
+            if delete {
+                match crate::agent::worktree::remove(&info, dirty) {
+                    Ok(()) => cx
+                        .editor
+                        .set_status(format!("Removed worktree '{}'", info.branch)),
+                    Err(err) => cx
+                        .editor
+                        .set_error(format!("Failed to remove worktree: {err}")),
+                }
+            } else {
+                cx.editor
+                    .set_status(format!("Kept worktree at {}", info.path.display()));
+            }
+            // Close the panel if that was the last session.
+            if cx.editor.agents.is_empty() {
+                cx.jobs.callback(async {
+                    Ok(Callback::EditorCompositor(Box::new(
+                        |_editor, compositor: &mut Compositor| {
+                            compositor.remove(ID);
+                        },
+                    )))
+                });
+            }
+        },
+    )
 }

@@ -6,3 +6,4 @@
 //! status out-of-band.
 
 pub mod hooks;
+pub mod worktree;

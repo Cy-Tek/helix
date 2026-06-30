@@ -3122,6 +3122,39 @@ fn claude_new(
     Ok(())
 }
 
+fn claude_new_worktree(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let branch = args
+        .first()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("agent-{}", cx.editor.agents.len() + 1));
+
+    let info = crate::agent::worktree::create(cx.editor, &branch)?;
+    let path = info.path.clone();
+    ui::claude::spawn_session_in(cx.editor, Some(branch), path, Some(info))?;
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 fn claude_close(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3130,10 +3163,24 @@ fn claude_close(
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    if let Some(id) = cx.editor.agents.focused {
-        cx.editor.agents.remove(id);
-    } else {
+    let Some(id) = cx.editor.agents.focused else {
         cx.editor.set_status("No focused agent session");
+        return Ok(());
+    };
+    // A worktree-owning session is closed via a confirm prompt so the on-disk
+    // worktree is never silently discarded.
+    if let Some(info) = cx.editor.agents.get(id).and_then(|s| s.worktree.clone()) {
+        let dirty = crate::agent::worktree::is_dirty(&info.path);
+        cx.jobs.callback(async move {
+            Ok(job::Callback::EditorCompositor(Box::new(
+                move |_editor: &mut Editor, compositor: &mut Compositor| {
+                    let prompt = crate::ui::claude::panel::worktree_close_prompt(id, info, dirty);
+                    compositor.push(Box::new(prompt));
+                },
+            )))
+        });
+    } else {
+        cx.editor.agents.remove(id);
     }
     Ok(())
 }
@@ -3169,6 +3216,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Start a new Claude agent session (optionally named) and open the agent panel.",
         fun: claude_new,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-new-worktree",
+        aliases: &[],
+        doc: "Create a git worktree (named branch, default agent-N) and start a Claude agent in it.",
+        fun: claude_new_worktree,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(1)),
