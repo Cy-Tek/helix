@@ -3073,7 +3073,97 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
+fn claude_new(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name = args.first().map(|s| s.to_string());
+    ui::claude::spawn_new_session(cx.editor, name)?;
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn claude_close(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    if let Some(id) = cx.editor.agents.focused {
+        cx.editor.agents.remove(id);
+    } else {
+        cx.editor.set_status("No focused agent session");
+    }
+    Ok(())
+}
+
+fn claude_list(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = cx.editor.agents.len();
+    cx.editor
+        .set_status(format!("{count} Claude agent session(s) running"));
+    Ok(())
+}
+
 pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
+    TypableCommand {
+        name: "claude-new",
+        aliases: &[],
+        doc: "Start a new Claude agent session (optionally named) and open the agent panel.",
+        fun: claude_new,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-close",
+        aliases: &[],
+        doc: "Close the focused Claude agent session.",
+        fun: claude_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-list",
+        aliases: &[],
+        doc: "Show how many Claude agent sessions are running.",
+        fun: claude_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
     TypableCommand {
         name: "exit",
         aliases: &["x", "xit"],

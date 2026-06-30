@@ -450,6 +450,8 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Markdown preview configuration.
     pub markdown_preview: MarkdownPreviewConfig,
+    /// Claude Code agent panel configuration.
+    pub claude_code: ClaudeCodeConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
 }
@@ -613,6 +615,42 @@ impl Default for MarkdownPreviewConfig {
             diagram_renderer_args: Vec::new(),
             max_width: u16::MAX,
             diagram_scale: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ClaudeCodeConfig {
+    /// Path or name of the Claude Code CLI binary. Defaults to `claude`.
+    pub binary_path: String,
+    /// Extra arguments appended to every `claude` invocation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_args: Vec<String>,
+    /// Root directory under which per-session git worktrees are created.
+    /// Defaults to `<repo>/.helix-worktrees` when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
+    /// Width, in columns, of the session-list pane on the left of the panel.
+    pub list_width: u16,
+    /// Maximum number of concurrent agent sessions.
+    pub max_sessions: usize,
+    /// Scrollback history kept per embedded terminal, in lines.
+    pub scrollback_lines: usize,
+    /// Ring the bell / flag the statusline when a session needs attention.
+    pub notify_on_attention: bool,
+}
+
+impl Default for ClaudeCodeConfig {
+    fn default() -> Self {
+        Self {
+            binary_path: String::from("claude"),
+            extra_args: Vec::new(),
+            worktree_root: None,
+            list_width: 32,
+            max_sessions: 8,
+            scrollback_lines: 10_000,
+            notify_on_attention: true,
         }
     }
 }
@@ -1256,6 +1294,7 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
             markdown_preview: MarkdownPreviewConfig::default(),
+            claude_code: ClaudeCodeConfig::default(),
             insecure: false,
         }
     }
@@ -1312,6 +1351,9 @@ pub struct Editor {
 
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
+
+    /// Managed Claude Code agent sessions (embedded `claude` terminals).
+    pub agents: crate::agent::AgentRegistry,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1469,6 +1511,7 @@ impl Editor {
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
+            agents: crate::agent::AgentRegistry::new(),
             syn_loader,
             theme_loader,
             last_theme: None,

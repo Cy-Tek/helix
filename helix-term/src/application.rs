@@ -1362,6 +1362,9 @@ impl Application {
             errs.push(err);
         }
 
+        // Terminate any running Claude agent child processes.
+        self.editor.agents.shutdown_all();
+
         if self.editor.close_language_servers(None).await.is_err() {
             log::error!("Timed out waiting for language servers to shutdown");
             errs.push(anyhow::format_err!(

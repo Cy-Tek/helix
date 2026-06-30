@@ -253,6 +253,14 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "D" => workspace_diagnostics_picker,
             "g" => changed_file_picker,
             "a" => code_action,
+            "A" => { "Claude agents"
+                "a" => claude_toggle_panel,
+                "n" => claude_new_session,
+                "c" => claude_close_session,
+                "!" => claude_focus_next_attention,
+                "t" => claude_toggle_right_pane,
+                "f" => claude_toggle_terminal_focus,
+            },
             "'" => last_picker,
             "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,

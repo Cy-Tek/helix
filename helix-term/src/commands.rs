@@ -430,6 +430,12 @@ impl MappableCommand {
         file_explorer_reveal_current_buffer, "Open tree file manager at project root, revealing the current buffer",
         file_explorer_in_current_buffer_directory, "Open tree file manager at current buffer's directory",
         file_explorer_in_current_directory, "Open tree file manager at current working directory",
+        claude_toggle_panel, "Toggle the Claude agent panel",
+        claude_new_session, "Start a new Claude agent session",
+        claude_close_session, "Close the focused Claude agent session",
+        claude_focus_next_attention, "Focus the next Claude agent awaiting attention",
+        claude_toggle_right_pane, "Toggle the agent panel's right pane (terminal/edits)",
+        claude_toggle_terminal_focus, "Toggle keyboard focus between the agent list and terminal",
         code_action, "Perform code action",
         recent_file_picker, "Open recent file picker for current project",
         all_recent_file_picker, "Open all recent file picker",
@@ -3809,6 +3815,69 @@ fn file_explorer(cx: &mut Context) {
     }
 
     cx.push_layer(Box::new(overlaid(ui::file_tree::FileTree::new(root))));
+}
+
+fn claude_toggle_panel(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        use crate::ui::claude::{ClaudePanel, ID};
+        use crate::ui::overlay::Overlay;
+        if compositor
+            .find_id::<Overlay<ClaudePanel>>(ID)
+            .is_some()
+        {
+            compositor.remove(ID);
+        } else {
+            compositor.push(Box::new(overlaid(ClaudePanel::new())));
+        }
+    }));
+}
+
+/// Ensure the agent panel is the front layer, pushing it if absent.
+fn claude_open_panel(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        use crate::ui::claude::{ClaudePanel, ID};
+        use crate::ui::overlay::Overlay;
+        if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+            compositor.push(Box::new(overlaid(ClaudePanel::new())));
+        }
+    }));
+}
+
+fn claude_new_session(cx: &mut Context) {
+    match ui::claude::spawn_new_session(cx.editor, None) {
+        Ok(_) => claude_open_panel(cx),
+        Err(err) => cx.editor.set_error(err.to_string()),
+    }
+}
+
+fn claude_close_session(cx: &mut Context) {
+    if let Some(id) = cx.editor.agents.focused {
+        cx.editor.agents.remove(id);
+    } else {
+        cx.editor.set_status("No focused agent session");
+    }
+}
+
+fn claude_focus_next_attention(cx: &mut Context) {
+    if cx.editor.agents.focus_next_awaiting().is_some() {
+        claude_open_panel(cx);
+    } else {
+        cx.editor.set_status("No agent awaiting attention");
+    }
+}
+
+fn claude_toggle_right_pane(cx: &mut Context) {
+    use helix_view::agent::RightPane;
+    if let Some(session) = cx.editor.agents.focused_mut() {
+        session.right_pane = match session.right_pane {
+            RightPane::Terminal => RightPane::Edits,
+            RightPane::Edits => RightPane::Terminal,
+        };
+    }
+}
+
+fn claude_toggle_terminal_focus(cx: &mut Context) {
+    cx.editor.agents.list_focused = !cx.editor.agents.list_focused;
 }
 
 fn file_explorer_reveal_current_buffer(cx: &mut Context) {
