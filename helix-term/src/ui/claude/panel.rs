@@ -36,6 +36,11 @@ pub struct ClaudePanel {
     /// the spinner advances even when no input/output events arrive. Dropped
     /// (and its task stopped) when nothing is animating or the panel closes.
     ticker: Option<AnimationTicker>,
+    /// Cached patch text for the edits view, keyed by the session it was
+    /// computed for. Recomputed when the focused session changes or on `r`.
+    diff_cache: Option<(AgentSessionId, String)>,
+    /// Scroll offset (in lines) of the edits view.
+    diff_scroll: u16,
 }
 
 impl ClaudePanel {
@@ -46,6 +51,8 @@ impl ClaudePanel {
             cursor: None,
             spinner,
             ticker: None,
+            diff_cache: None,
+            diff_scroll: 0,
         }
     }
 }
@@ -134,10 +141,18 @@ impl Component for ClaudePanel {
         block.render(area, surface);
 
         // Context-sensitive key hint, cut into the bottom border.
+        let viewing_edits = ctx
+            .editor
+            .agents
+            .focused()
+            .map(|s| s.right_pane == RightPane::Edits)
+            .unwrap_or(false);
         let hint = if ctx.editor.agents.is_empty() {
             "n new · q/esc/C-q close"
+        } else if list_focused && viewing_edits {
+            "j/k session · C-d/C-u scroll · r refresh · Tab terminal · C-q quit"
         } else if list_focused {
-            "j/k select · enter focus · n new · q close session · C-q quit"
+            "j/k select · enter focus · Tab edits · n new · q close · C-q quit"
         } else {
             "C-o session list · C-q close panel"
         };
@@ -280,16 +295,32 @@ impl Component for ClaudePanel {
                 }
             }
             RightPane::Edits => {
-                let msg = "Edits view — available in a later phase.  Tab: back to terminal";
-                surface.set_string_truncated(
-                    content_area.x + 1,
-                    content_area.y,
-                    msg,
-                    content_area.width.saturating_sub(2) as usize,
-                    |_| text_style,
-                    true,
-                    false,
-                );
+                use crate::ui::claude::diff_view;
+
+                // (Re)compute the patch when the focused session changes.
+                let session = focused_id.and_then(|id| {
+                    ctx.editor.agents.get(id).map(|s| (id, s.cwd.clone()))
+                });
+                if let Some((id, cwd)) = session {
+                    let stale = self
+                        .diff_cache
+                        .as_ref()
+                        .map(|(cached, _)| *cached != id)
+                        .unwrap_or(true);
+                    if stale {
+                        self.diff_cache = Some((id, diff_view::compute(&cwd)));
+                        self.diff_scroll = 0;
+                    }
+                }
+
+                let mut clamped = self.diff_scroll;
+                if let Some((_, text)) = self.diff_cache.as_ref() {
+                    let max_scroll =
+                        diff_view::line_count(text).saturating_sub(content_area.height.max(1));
+                    clamped = self.diff_scroll.min(max_scroll);
+                    diff_view::render(text, clamped, content_area, surface, theme);
+                }
+                self.diff_scroll = clamped;
                 self.cursor = None;
             }
         }
@@ -330,6 +361,33 @@ impl Component for ClaudePanel {
 
 impl ClaudePanel {
     fn handle_list_key(&mut self, key: KeyEvent, ctx: &mut Context) -> EventResult {
+        // When the focused session is showing its edits diff, these keys scroll
+        // it (session navigation with j/k still works for switching sessions).
+        let viewing_edits = ctx
+            .editor
+            .agents
+            .focused()
+            .map(|s| s.right_pane == RightPane::Edits)
+            .unwrap_or(false);
+        if viewing_edits {
+            match key {
+                k if k == ctrl!('d') || k == key!(PageDown) => {
+                    self.diff_scroll = self.diff_scroll.saturating_add(15);
+                    return EventResult::Consumed(None);
+                }
+                k if k == ctrl!('u') || k == key!(PageUp) => {
+                    self.diff_scroll = self.diff_scroll.saturating_sub(15);
+                    return EventResult::Consumed(None);
+                }
+                key!('r') => {
+                    // Force a refresh of the cached diff.
+                    self.diff_cache = None;
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
         match key {
             key!('j') | key!(Down) => {
                 ctx.editor.agents.focus_next();
@@ -360,6 +418,8 @@ impl ClaudePanel {
                         RightPane::Edits => RightPane::Terminal,
                     };
                 }
+                // Start the edits view at the top each time it's opened.
+                self.diff_scroll = 0;
             }
             key!('q') => {
                 if let Some(id) = ctx.editor.agents.focused {

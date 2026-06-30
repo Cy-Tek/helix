@@ -3,6 +3,7 @@
 //! A floating window listing managed `claude` sessions (left) with the focused
 //! session's embedded terminal on the right. See [`panel::ClaudePanel`].
 
+pub mod diff_view;
 pub mod panel;
 
 pub use panel::ClaudePanel;
