@@ -261,6 +261,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "t" => claude_toggle_right_pane,
                 "f" => claude_toggle_terminal_focus,
             },
+            "t" => open_terminal,
             "'" => last_picker,
             "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,

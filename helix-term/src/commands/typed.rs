@@ -3073,6 +3073,28 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
+fn open_terminal(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
+    let pane = ui::terminal::spawn_terminal(cx.editor, &args)?;
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                compositor.push(Box::new(overlaid(pane)));
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 fn claude_new(
     cx: &mut compositor::Context,
     args: Args,
@@ -3131,6 +3153,17 @@ fn claude_list(
 }
 
 pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
+    TypableCommand {
+        name: "terminal",
+        aliases: &["term"],
+        doc: "Open an embedded terminal. With arguments, runs that command; otherwise the configured shell.",
+        fun: open_terminal,
+        completer: CommandCompleter::all(completers::program),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
     TypableCommand {
         name: "claude-new",
         aliases: &[],

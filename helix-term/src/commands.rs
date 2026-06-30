@@ -430,6 +430,7 @@ impl MappableCommand {
         file_explorer_reveal_current_buffer, "Open tree file manager at project root, revealing the current buffer",
         file_explorer_in_current_buffer_directory, "Open tree file manager at current buffer's directory",
         file_explorer_in_current_directory, "Open tree file manager at current working directory",
+        open_terminal, "Open an embedded terminal running the configured shell",
         claude_toggle_panel, "Toggle the Claude agent panel",
         claude_new_session, "Start a new Claude agent session",
         claude_close_session, "Close the focused Claude agent session",
@@ -3815,6 +3816,13 @@ fn file_explorer(cx: &mut Context) {
     }
 
     cx.push_layer(Box::new(overlaid(ui::file_tree::FileTree::new(root))));
+}
+
+fn open_terminal(cx: &mut Context) {
+    match ui::terminal::spawn_terminal(cx.editor, &[]) {
+        Ok(pane) => cx.push_layer(Box::new(overlaid(pane))),
+        Err(err) => cx.editor.set_error(format!("Failed to open terminal: {err}")),
+    }
 }
 
 fn claude_toggle_panel(cx: &mut Context) {

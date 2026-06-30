@@ -10,9 +10,10 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-pub mod terminal;
-
-pub use terminal::{TerminalCell, TerminalHandle, TerminalSize, TerminalSnapshot};
+// The terminal emulator is a general-purpose facility (also used by the
+// standalone `:terminal`); it lives at `helix_view::terminal`. Re-exported here
+// for the agent API's convenience.
+pub use crate::terminal::{TerminalCell, TerminalHandle, TerminalSize, TerminalSnapshot};
 
 slotmap::new_key_type! {
     /// Editor-local handle to an agent session, stable across removals — the

@@ -4,7 +4,6 @@
 //! session's embedded terminal on the right. See [`panel::ClaudePanel`].
 
 pub mod panel;
-pub mod terminal_view;
 
 pub use panel::ClaudePanel;
 

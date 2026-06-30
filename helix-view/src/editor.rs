@@ -452,6 +452,8 @@ pub struct Config {
     pub markdown_preview: MarkdownPreviewConfig,
     /// Claude Code agent panel configuration.
     pub claude_code: ClaudeCodeConfig,
+    /// Embedded (in-editor) terminal configuration.
+    pub embedded_terminal: EmbeddedTerminalConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
 }
@@ -651,6 +653,26 @@ impl Default for ClaudeCodeConfig {
             max_sessions: 8,
             scrollback_lines: 10_000,
             notify_on_attention: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct EmbeddedTerminalConfig {
+    /// Shell/program launched by `:terminal` when no program is given. Falls
+    /// back to the `$SHELL` environment variable, then `/bin/sh`, when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// Scrollback history kept per embedded terminal, in lines.
+    pub scrollback_lines: usize,
+}
+
+impl Default for EmbeddedTerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            scrollback_lines: 10_000,
         }
     }
 }
@@ -1295,6 +1317,7 @@ impl Default for Config {
             buffer_picker: BufferPickerConfig::default(),
             markdown_preview: MarkdownPreviewConfig::default(),
             claude_code: ClaudeCodeConfig::default(),
+            embedded_terminal: EmbeddedTerminalConfig::default(),
             insecure: false,
         }
     }

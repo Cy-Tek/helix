@@ -1,21 +1,33 @@
-//! Blitting an embedded terminal's neutral grid snapshot into a Helix
-//! [`Surface`], plus translation of Helix key events into terminal input byte
-//! sequences. The terminal-emulator crate itself is confined to
-//! `helix_view::agent::terminal`; this module only consumes its snapshot.
+//! Embedded terminal UI.
+//!
+//! Provides the shared rendering and key-encoding used by every embedded
+//! terminal (the Claude agent panel and the standalone `:terminal`), plus
+//! [`TerminalPane`] — a floating, alacritty-powered terminal that runs an
+//! arbitrary command. The terminal-emulator crate itself stays confined to
+//! [`helix_view::terminal`]; this module only consumes its snapshot.
+
+use std::path::PathBuf;
 
 use helix_core::Position;
-use helix_view::agent::AgentSession;
-use helix_view::graphics::Rect;
-use helix_view::input::KeyEvent;
+use helix_view::graphics::{CursorKind, Rect};
+use helix_view::input::{Event, KeyEvent};
 use helix_view::keyboard::{KeyCode, KeyModifiers};
+use helix_view::terminal::TerminalHandle;
+use helix_view::Editor;
 
 use tui::buffer::Buffer as Surface;
 
-/// Render the focused session's terminal grid into `area`. The caller is
+use crate::compositor::{Component, Context, EventResult};
+use crate::ctrl;
+
+/// Stable compositor id for the standalone terminal.
+pub const ID: &str = "terminal";
+
+/// Blit a terminal's neutral grid snapshot into `area`. The caller is
 /// responsible for keeping the emulator sized to `area`. Returns the absolute
 /// cursor position when the terminal cursor is visible.
-pub fn render(session: &AgentSession, area: Rect, surface: &mut Surface) -> Option<Position> {
-    let snapshot = session.terminal.snapshot();
+pub fn render(terminal: &TerminalHandle, area: Rect, surface: &mut Surface) -> Option<Position> {
+    let snapshot = terminal.snapshot();
     let cols = area.width;
     let rows = area.height;
     let mut buf = [0u8; 4];
@@ -47,6 +59,155 @@ pub fn render(session: &AgentSession, area: Rect, surface: &mut Surface) -> Opti
             None
         }
     })
+}
+
+/// Resolve the working directory for a new terminal: the workspace root.
+fn terminal_cwd() -> PathBuf {
+    helix_core::find_workspace().0
+}
+
+/// Spawn a [`TerminalPane`] running `args` (or the configured shell when empty),
+/// rooted at the workspace.
+pub fn spawn_terminal(editor: &Editor, args: &[String]) -> anyhow::Result<TerminalPane> {
+    let (configured_shell, scrollback) = {
+        let config = editor.config();
+        (
+            config.embedded_terminal.shell.clone(),
+            config.embedded_terminal.scrollback_lines,
+        )
+    };
+
+    let (program, prog_args, title) = match args.split_first() {
+        Some((first, rest)) => (first.clone(), rest.to_vec(), args.join(" ")),
+        None => {
+            let shell = configured_shell
+                .or_else(|| std::env::var("SHELL").ok())
+                .unwrap_or_else(|| String::from("/bin/sh"));
+            (shell.clone(), Vec::new(), shell)
+        }
+    };
+
+    let terminal =
+        TerminalHandle::spawn(&program, &prog_args, &[], &terminal_cwd(), 24, 80, scrollback)?;
+    Ok(TerminalPane::new(terminal, title))
+}
+
+/// A floating terminal running a single command. Closes when the user presses
+/// the detach chord, or — once the child has exited — on any key.
+pub struct TerminalPane {
+    terminal: TerminalHandle,
+    title: String,
+    cursor: Option<Position>,
+    exited: bool,
+}
+
+impl TerminalPane {
+    pub fn new(terminal: TerminalHandle, title: String) -> Self {
+        Self {
+            terminal,
+            title,
+            cursor: None,
+            exited: false,
+        }
+    }
+}
+
+impl Component for TerminalPane {
+    fn render(&mut self, area: Rect, surface: &mut Surface, ctx: &mut Context) {
+        let theme = &ctx.editor.theme;
+        let base = theme.get("ui.background");
+        let header_style = theme.get("ui.statusline");
+        surface.clear_with(area, base);
+
+        if area.height == 0 {
+            self.cursor = None;
+            return;
+        }
+
+        // Header row: title on the left, detach hint on the right.
+        let exit_note = match self.terminal.exit_status() {
+            Some(code) => {
+                self.exited = true;
+                format!(" [exited {code}] ")
+            }
+            None => String::new(),
+        };
+        let header = format!(" {} {}", self.title, exit_note);
+        surface.set_stringn(
+            area.x,
+            area.y,
+            &header,
+            area.width as usize,
+            header_style,
+        );
+        let hint = if self.exited {
+            "any key: close "
+        } else {
+            "C-q: close "
+        };
+        let hint_x = area.right().saturating_sub(hint.len() as u16 + 1);
+        if hint_x > area.x + header.len() as u16 {
+            surface.set_string(hint_x, area.y, hint, header_style);
+        }
+
+        let term_area = area.clip_top(1);
+        if term_area.height == 0 || term_area.width == 0 {
+            self.cursor = None;
+            return;
+        }
+
+        self.terminal.resize(term_area.height, term_area.width);
+        self.cursor = render(&self.terminal, term_area, surface);
+        if self.exited {
+            self.cursor = None;
+        }
+    }
+
+    fn handle_event(&mut self, event: &Event, _ctx: &mut Context) -> EventResult {
+        let key = match event {
+            Event::Key(key) => *key,
+            Event::Paste(text) => {
+                if !self.exited {
+                    self.terminal.write_input(text.as_bytes());
+                }
+                return EventResult::Consumed(None);
+            }
+            _ => return EventResult::Ignored(None),
+        };
+
+        // Once the process has exited, the pane is just showing final output;
+        // any key dismisses it.
+        if self.exited {
+            return close();
+        }
+
+        // Detach chord — closes the pane (and kills the child on drop).
+        if key == ctrl!('q') {
+            return close();
+        }
+
+        if let Some(bytes) = encode_key(&key) {
+            self.terminal.write_input(&bytes);
+        }
+        EventResult::Consumed(None)
+    }
+
+    fn cursor(&self, _area: Rect, _editor: &Editor) -> (Option<Position>, CursorKind) {
+        match self.cursor {
+            Some(pos) => (Some(pos), CursorKind::Block),
+            None => (None, CursorKind::Hidden),
+        }
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some(ID)
+    }
+}
+
+fn close() -> EventResult {
+    EventResult::Consumed(Some(Box::new(|compositor, _| {
+        compositor.remove(ID);
+    })))
 }
 
 /// Encode a Helix key event as the byte sequence a terminal application expects
@@ -164,7 +325,6 @@ mod tests {
             encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE)),
             Some(b"a".to_vec())
         );
-        // Unicode is UTF-8 encoded.
         assert_eq!(
             encode_key(&key(KeyCode::Char('é'), KeyModifiers::NONE)),
             Some("é".as_bytes().to_vec())
@@ -173,7 +333,6 @@ mod tests {
 
     #[test]
     fn control_chars() {
-        // Ctrl-C => 0x03, Ctrl-A => 0x01.
         assert_eq!(
             encode_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Some(vec![0x03])
@@ -206,7 +365,6 @@ mod tests {
             encode_key(&key(KeyCode::Esc, KeyModifiers::NONE)),
             Some(vec![0x1b])
         );
-        // Shift-Tab is encoded as the back-tab CSI sequence.
         assert_eq!(
             encode_key(&key(KeyCode::Tab, KeyModifiers::SHIFT)),
             Some(b"\x1b[Z".to_vec())
@@ -219,7 +377,6 @@ mod tests {
             encode_key(&key(KeyCode::Up, KeyModifiers::NONE)),
             Some(b"\x1b[A".to_vec())
         );
-        // Ctrl-Right uses the CSI modifier parameter (1 + 4 = 5).
         assert_eq!(
             encode_key(&key(KeyCode::Right, KeyModifiers::CONTROL)),
             Some(b"\x1b[1;5C".to_vec())

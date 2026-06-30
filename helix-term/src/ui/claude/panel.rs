@@ -10,7 +10,8 @@ use helix_view::input::{Event, KeyEvent};
 use tui::buffer::Buffer as Surface;
 
 use crate::compositor::{Component, Context, EventResult};
-use crate::ui::claude::{spawn_new_session, terminal_view, ID};
+use crate::ui::claude::{spawn_new_session, ID};
+use crate::ui::terminal;
 use crate::{ctrl, key};
 
 /// The floating agent panel. Holds no session state of its own — it reads
@@ -144,7 +145,7 @@ impl Component for ClaudePanel {
                     .editor
                     .agents
                     .focused()
-                    .and_then(|session| terminal_view::render(session, content_area, surface));
+                    .and_then(|session| terminal::render(&session.terminal, content_area, surface));
                 // Only show the cursor when the terminal has key focus.
                 if list_focused {
                     self.cursor = None;
@@ -250,7 +251,7 @@ impl ClaudePanel {
             ctx.editor.agents.list_focused = true;
             return EventResult::Consumed(None);
         }
-        if let Some(bytes) = terminal_view::encode_key(&key) {
+        if let Some(bytes) = terminal::encode_key(&key) {
             if let Some(session) = ctx.editor.agents.focused() {
                 session.terminal.write_input(&bytes);
             }
