@@ -14,6 +14,7 @@ pub mod handlers;
 pub mod info;
 pub mod input;
 pub mod keyboard;
+pub mod notifications;
 pub mod project;
 pub mod register;
 pub mod terminal;

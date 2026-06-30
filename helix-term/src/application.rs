@@ -285,6 +285,8 @@ impl Application {
         let surface = self.terminal.current_buffer_mut();
 
         self.compositor.render(area, surface, &mut cx);
+        // Toasts paint on top of every compositor layer.
+        crate::ui::notifications::render(&mut self.editor, area, surface);
         let (pos, kind) = self.compositor.cursor(area, &self.editor);
         // reset cursor cache
         self.editor.cursor_cache.reset();

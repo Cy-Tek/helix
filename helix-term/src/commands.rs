@@ -437,6 +437,8 @@ impl MappableCommand {
         claude_focus_next_attention, "Focus the next Claude agent awaiting attention",
         claude_toggle_right_pane, "Toggle the agent panel's right pane (terminal/edits)",
         claude_toggle_terminal_focus, "Toggle keyboard focus between the agent list and terminal",
+        notification_action, "Act on the newest actionable toast notification",
+        notification_dismiss, "Dismiss the newest toast notification",
         code_action, "Perform code action",
         recent_file_picker, "Open recent file picker for current project",
         all_recent_file_picker, "Open all recent file picker",
@@ -3886,6 +3888,43 @@ fn claude_toggle_right_pane(cx: &mut Context) {
 
 fn claude_toggle_terminal_focus(cx: &mut Context) {
     cx.editor.agents.list_focused = !cx.editor.agents.list_focused;
+}
+
+/// Act on the newest actionable toast (and dismiss it). The single universal
+/// notification-action key; behavior depends on the toast's action, not on the
+/// event that produced it.
+fn notification_action(cx: &mut Context) {
+    use helix_view::notifications::NotificationAction;
+
+    match cx.editor.notifications.take_newest_action() {
+        Some(NotificationAction::FocusAgent(id)) => {
+            if cx.editor.agents.get(id).is_none() {
+                cx.editor.set_status("That agent is no longer available");
+                return;
+            }
+            // Land in the session's thread (terminal), not the list, and open
+            // the panel if it isn't already up.
+            cx.editor.agents.focused = Some(id);
+            cx.editor.agents.list_focused = false;
+            cx.callback.push(Box::new(|compositor, _cx| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            }));
+        }
+        Some(NotificationAction::RunCommand(name)) => {
+            cx.editor
+                .set_status(format!("Notification command '{name}' is not yet supported"));
+        }
+        None => cx.editor.set_status("No notification to act on"),
+    }
+}
+
+/// Dismiss the newest toast without acting on it.
+fn notification_dismiss(cx: &mut Context) {
+    cx.editor.notifications.dismiss_newest();
 }
 
 fn file_explorer_reveal_current_buffer(cx: &mut Context) {

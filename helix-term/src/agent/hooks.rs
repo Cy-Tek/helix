@@ -19,7 +19,10 @@
 use std::path::{Path, PathBuf};
 
 use helix_view::agent::AgentStatus;
+use helix_view::notifications::{Notification, NotificationAction};
 use helix_view::Editor;
+
+use crate::compositor::Compositor;
 
 /// One hook event, parsed leniently. Unknown events deserialize fine and map to
 /// no status change, so an evolving hook schema degrades gracefully rather than
@@ -166,15 +169,18 @@ async fn apply_payload(buf: &[u8]) {
         Err(_) => return,
     };
 
-    crate::job::dispatch_callback(crate::job::Callback::Editor(Box::new(move |editor| {
-        apply_to_editor(editor, payload);
-    })))
+    // EditorCompositor (not Editor-only) so we can tell whether the agent panel
+    // is currently open when deciding to raise a toast.
+    crate::job::dispatch(move |editor, compositor| {
+        apply_to_editor(editor, compositor, payload);
+    })
     .await;
     helix_event::request_redraw();
 }
 
-/// Correlate a payload to a session and mutate it. Runs on the main loop.
-fn apply_to_editor(editor: &mut Editor, payload: HookPayload) {
+/// Correlate a payload to a session, mutate it, and raise a toast on a
+/// status transition the user can't already see. Runs on the main loop.
+fn apply_to_editor(editor: &mut Editor, compositor: &mut Compositor, payload: HookPayload) {
     // Prefer the session-id we passed via `--session-id`; fall back to cwd in
     // case the installed CLI doesn't echo our id back on hook payloads.
     let id = payload
@@ -189,21 +195,53 @@ fn apply_to_editor(editor: &mut Editor, payload: HookPayload) {
         });
 
     let Some(id) = id else { return };
-    let notify_on_attention = editor.config().claude_code.notify_on_attention;
+    let (notify_on_attention, notify_on_done) = {
+        let cc = &editor.config().claude_code;
+        (cc.notify_on_attention, cc.notify_on_done)
+    };
     let new_status = status_for(&payload.hook_event_name, payload.message.clone());
 
-    // Mutate the session in a scope so the borrow ends before we touch the
-    // editor again to post a notification.
-    let mut attention = None;
+    // "Already there": the panel is open AND this session is focused AND the
+    // terminal (not the list) has focus — i.e. the user is in this thread.
+    let panel_open = compositor
+        .find_id::<crate::ui::overlay::Overlay<crate::ui::claude::ClaudePanel>>(
+            crate::ui::claude::ID,
+        )
+        .is_some();
+    let user_there =
+        panel_open && editor.agents.focused == Some(id) && !editor.agents.list_focused;
+
+    // Mutate the session in a scope so the borrow ends before we push a toast.
+    let mut toast = None;
     {
         let Some(session) = editor.agents.get_mut(id) else {
             return;
         };
+        let name = session.display_name.clone();
 
         if let Some(status) = &new_status {
+            let transitioned = session.status != *status;
             session.status = status.clone();
-            if let AgentStatus::AwaitingAttention(message) = status {
-                attention = Some((session.display_name.clone(), message.clone()));
+
+            if transitioned && !user_there {
+                match status {
+                    AgentStatus::AwaitingAttention(message) if notify_on_attention => {
+                        toast = Some(
+                            Notification::warning(format!("{name}: {message}"))
+                                .with_title("agent blocked")
+                                .sticky()
+                                .with_action(NotificationAction::FocusAgent(id)),
+                        );
+                    }
+                    AgentStatus::Done if notify_on_done => {
+                        toast = Some(
+                            Notification::info(format!("{name} finished"))
+                                .with_title("agent done")
+                                .with_action(NotificationAction::FocusAgent(id)),
+                        );
+                    }
+                    _ => {}
+                }
             }
         }
         session.last_activity = std::time::Instant::now();
@@ -237,10 +275,8 @@ fn apply_to_editor(editor: &mut Editor, payload: HookPayload) {
         }
     }
 
-    if notify_on_attention {
-        if let Some((name, message)) = attention {
-            editor.set_status(format!("Claude agent '{name}' needs attention: {message}"));
-        }
+    if let Some(toast) = toast {
+        editor.push_notification(toast);
     }
 }
 

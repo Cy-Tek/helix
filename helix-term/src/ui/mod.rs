@@ -10,6 +10,7 @@ pub mod lsp;
 mod markdown;
 pub(crate) mod markdown_preview;
 pub mod menu;
+pub(crate) mod notifications;
 pub mod overlay;
 pub mod picker;
 pub mod popup;

@@ -639,8 +639,10 @@ pub struct ClaudeCodeConfig {
     pub max_sessions: usize,
     /// Scrollback history kept per embedded terminal, in lines.
     pub scrollback_lines: usize,
-    /// Ring the bell / flag the statusline when a session needs attention.
+    /// Toast when a session needs attention (is blocked / asks a question).
     pub notify_on_attention: bool,
+    /// Toast when a session finishes a turn.
+    pub notify_on_done: bool,
 }
 
 impl Default for ClaudeCodeConfig {
@@ -653,6 +655,7 @@ impl Default for ClaudeCodeConfig {
             max_sessions: 8,
             scrollback_lines: 10_000,
             notify_on_attention: true,
+            notify_on_done: true,
         }
     }
 }
@@ -1393,6 +1396,9 @@ pub struct Editor {
     pub last_selection: Option<Selection>,
 
     pub status_msg: Option<(Cow<'static, str>, Severity)>,
+    /// Generic, stackable toast notifications (drawn on top of everything by
+    /// helix-term). Distinct from the single-line `status_msg`.
+    pub notifications: crate::notifications::Notifications,
     pub autoinfo: Option<Info>,
 
     pub config: Arc<dyn DynAccess<Config>>,
@@ -1544,6 +1550,7 @@ impl Editor {
                 |config: &Config| &config.clipboard_provider,
             ))),
             status_msg: None,
+            notifications: crate::notifications::Notifications::default(),
             autoinfo: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             redraw_timer: Box::pin(sleep(Duration::MAX)),
@@ -1645,6 +1652,11 @@ impl Editor {
         let warning = warning.into();
         log::warn!("editor warning: {}", warning);
         self.status_msg = Some((warning, Severity::Warning));
+    }
+
+    /// Push a generic toast notification. Returns its id (for later dismissal).
+    pub fn push_notification(&mut self, notification: crate::notifications::Notification) -> u64 {
+        self.notifications.push(notification)
     }
 
     #[inline]
