@@ -7,7 +7,9 @@ pub mod panel;
 
 pub use panel::ClaudePanel;
 
-use helix_view::agent::{AgentSessionId, SpawnConfig};
+use std::path::PathBuf;
+
+use helix_view::agent::{AgentSessionId, SpawnConfig, WorktreeInfo};
 use helix_view::Editor;
 
 /// Stable compositor id for the panel layer.
@@ -18,6 +20,19 @@ pub const ID: &str = "claude-panel";
 pub fn spawn_new_session(
     editor: &mut Editor,
     name: Option<String>,
+) -> anyhow::Result<AgentSessionId> {
+    let cwd = helix_core::find_workspace().0;
+    spawn_session_in(editor, name, cwd, None)
+}
+
+/// Spawn an agent session rooted at `cwd` (e.g. a git worktree). `worktree`
+/// records ownership for cleanup. Wires Claude Code hooks for live status when
+/// possible, falling back to a plain spawn if that setup fails.
+pub fn spawn_session_in(
+    editor: &mut Editor,
+    name: Option<String>,
+    cwd: PathBuf,
+    worktree: Option<WorktreeInfo>,
 ) -> anyhow::Result<AgentSessionId> {
     // Copy the needed config out so the config guard is dropped before the
     // mutable borrow of `editor.agents`.
@@ -36,22 +51,51 @@ pub fn spawn_new_session(
         anyhow::bail!("maximum number of agent sessions ({max_sessions}) reached");
     }
 
-    let cwd = helix_core::find_workspace().0;
     let display_name = name.unwrap_or_else(|| format!("agent {}", editor.agents.len() + 1));
+
+    // Best-effort hooks wiring: live status needs the socket + per-session
+    // settings, but a failure here must not stop the agent from spawning.
+    let (claude_session_id, settings_path, mut args) = match setup_session_hooks(editor) {
+        Ok((session_id, settings)) => {
+            let args = vec![
+                "--session-id".to_string(),
+                session_id.clone(),
+                "--settings".to_string(),
+                settings.to_string_lossy().into_owned(),
+            ];
+            (Some(session_id), Some(settings), args)
+        }
+        Err(err) => {
+            log::warn!("Claude agent hooks disabled (status will not update): {err}");
+            (None, None, Vec::new())
+        }
+    };
+    // Caller-supplied extra args come first, our control flags last.
+    let mut full_args = extra_args;
+    full_args.append(&mut args);
 
     let id = editor.agents.spawn_session(SpawnConfig {
         display_name,
         cwd,
         program: binary_path,
-        args: extra_args,
+        args: full_args,
         envs: Vec::new(),
-        worktree: None,
-        settings_path: None,
-        claude_session_id: None,
+        worktree,
+        settings_path,
+        claude_session_id,
         scrollback_lines,
     })?;
 
     // Focus the terminal immediately so the user can start typing.
     editor.agents.list_focused = false;
     Ok(id)
+}
+
+/// Ensure the hook listener is running and generate this session's settings
+/// file. Returns the `--session-id` uuid and the settings path.
+fn setup_session_hooks(editor: &mut Editor) -> anyhow::Result<(String, PathBuf)> {
+    let socket = crate::agent::hooks::ensure_listener(editor)?;
+    let settings = crate::agent::hooks::generate_settings(&socket)?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    Ok((session_id, settings))
 }

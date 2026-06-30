@@ -7,7 +7,8 @@
 //! of its own. The terminal *grid* inside each handle is separately shared with
 //! its reader thread behind a fair mutex — see [`terminal`].
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 // The terminal emulator is a general-purpose facility (also used by the
@@ -96,6 +97,9 @@ pub struct AgentSession {
     /// Generated per-session settings file, removed on close. `None` until the
     /// hooks phase wires it up.
     pub settings_path: Option<PathBuf>,
+    /// Files the agent has edited, learned from `PostToolUse` hooks; feeds the
+    /// edits-diff view.
+    pub edited_files: BTreeSet<PathBuf>,
 }
 
 /// Parameters for spawning a new agent session.
@@ -121,6 +125,9 @@ pub struct AgentRegistry {
     /// When `true`, keystrokes drive the session list; when `false`, they are
     /// forwarded to the focused terminal.
     pub list_focused: bool,
+    /// Path of the Unix socket the hook forwarder writes to. Lazily set by the
+    /// hooks bridge when the first session spawns; the listener task owns it.
+    pub hook_socket: Option<PathBuf>,
 }
 
 impl AgentRegistry {
@@ -156,6 +163,7 @@ impl AgentRegistry {
             stats: AgentStats::default(),
             last_activity: Instant::now(),
             settings_path: config.settings_path,
+            edited_files: BTreeSet::new(),
         });
         self.order.push(id);
         self.focused = Some(id);
@@ -203,6 +211,15 @@ impl AgentRegistry {
                 .and_then(|s| s.claude_session_id.as_deref())
                 == Some(claude_session_id)
         })
+    }
+
+    /// Find a session by working directory, used as a fallback correlation for
+    /// hook events when the session id isn't echoed back.
+    pub fn id_for_cwd(&self, cwd: &Path) -> Option<AgentSessionId> {
+        self.order
+            .iter()
+            .copied()
+            .find(|id| self.sessions.get(*id).is_some_and(|s| s.cwd == cwd))
     }
 
     /// Whether any session needs attention (for statusline / notifications).
@@ -261,6 +278,10 @@ impl AgentRegistry {
     pub fn remove(&mut self, id: AgentSessionId) -> Option<AgentSession> {
         let session = self.sessions.remove(id)?;
         session.terminal.kill();
+        // Remove the generated per-session settings file.
+        if let Some(path) = &session.settings_path {
+            let _ = std::fs::remove_file(path);
+        }
         self.order.retain(|other| *other != id);
         if self.focused == Some(id) {
             self.focused = self.order.first().copied();
@@ -268,11 +289,17 @@ impl AgentRegistry {
         Some(session)
     }
 
-    /// Kill every child process. Called on editor shutdown. Worktrees are not
-    /// auto-removed.
+    /// Kill every child process and remove generated settings files. Called on
+    /// editor shutdown. Worktrees are not auto-removed.
     pub fn shutdown_all(&mut self) {
         for session in self.sessions.values() {
             session.terminal.kill();
+            if let Some(path) = &session.settings_path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        if let Some(socket) = &self.hook_socket {
+            let _ = std::fs::remove_file(socket);
         }
     }
 }
