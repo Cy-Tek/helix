@@ -38,6 +38,11 @@ struct HookPayload {
     /// Present on `Notification` events — the human-readable message.
     #[serde(default)]
     message: Option<String>,
+    /// Present on `Notification` events — e.g. `permission_prompt`, `idle_prompt`,
+    /// `auth_success`, `elicitation_dialog`. Distinguishes "needs you" from
+    /// "just idle / informational".
+    #[serde(default)]
+    notification_type: Option<String>,
     /// Present on tool hooks.
     #[serde(default)]
     tool_name: Option<String>,
@@ -67,18 +72,36 @@ struct Usage {
     output_tokens: Option<u64>,
 }
 
-/// Map a hook event name to the status it implies, or `None` for events that
-/// should not change status (e.g. `SessionEnd`, handled by the exit watcher, or
-/// any unrecognized event).
-fn status_for(event: &str, message: Option<String>) -> Option<AgentStatus> {
+/// Map a hook event to the status it implies, or `None` for events that should
+/// not change status (e.g. `SessionEnd`, informational notifications, or any
+/// unrecognized event). `Notification` is dispatched by `notification_type`:
+/// only a permission/elicitation prompt means "needs you"; `idle_prompt` means
+/// the turn is at rest (done), and the rest are informational.
+fn status_for(
+    event: &str,
+    notification_type: Option<&str>,
+    message: Option<String>,
+) -> Option<AgentStatus> {
     match event {
         "SessionStart" => Some(AgentStatus::Starting),
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" => {
             Some(AgentStatus::Working)
         }
-        "Notification" => Some(AgentStatus::AwaitingAttention(
-            message.unwrap_or_else(|| "needs attention".to_string()),
-        )),
+        "Notification" => match notification_type {
+            Some("permission_prompt") | Some("elicitation_dialog") => {
+                Some(AgentStatus::AwaitingAttention(message.unwrap_or_else(|| {
+                    "needs your approval".to_string()
+                })))
+            }
+            Some("idle_prompt") => Some(AgentStatus::Done),
+            // auth_success, elicitation_complete/response, unknown → no change.
+            // But if the CLI omits the type entirely, treat a Notification as a
+            // generic attention signal rather than dropping it.
+            None => Some(AgentStatus::AwaitingAttention(
+                message.unwrap_or_else(|| "needs attention".to_string()),
+            )),
+            Some(_) => None,
+        },
         "Stop" | "SubagentStop" => Some(AgentStatus::Done),
         _ => None,
     }
@@ -97,9 +120,28 @@ pub fn forward_stdin_to_socket(socket: &Path) -> i32 {
     if std::io::stdin().read_to_end(&mut input).is_err() {
         return 0;
     }
-    if let Ok(mut stream) = UnixStream::connect(socket) {
-        let _ = stream.write_all(&input);
-        let _ = stream.flush();
+    let connected = UnixStream::connect(socket)
+        .map(|mut stream| {
+            let _ = stream.write_all(&input);
+            let _ = stream.flush();
+        })
+        .is_ok();
+
+    // Opt-in diagnostics: set HELIX_AGENT_HOOK_DEBUG to trace hook delivery from
+    // the (separate, short-lived) forwarder process, which has no other way to
+    // report back. Writes one line per hook to <tmpdir>/helix-agent-hooks.log.
+    if std::env::var_os("HELIX_AGENT_HOOK_DEBUG").is_some() {
+        use std::io::Write as _;
+        let log = std::env::temp_dir().join("helix-agent-hooks.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+            let preview = String::from_utf8_lossy(&input);
+            let preview = preview.get(..200).unwrap_or(&preview);
+            let _ = writeln!(
+                f,
+                "[forwarder] socket={} connected={connected} payload={preview}",
+                socket.display(),
+            );
+        }
     }
     0
 }
@@ -194,12 +236,24 @@ fn apply_to_editor(editor: &mut Editor, compositor: &mut Compositor, payload: Ho
                 .and_then(|cwd| editor.agents.id_for_cwd(Path::new(cwd)))
         });
 
-    let Some(id) = id else { return };
+    let Some(id) = id else {
+        log::debug!(
+            "agent hook: event={} could not be matched to a session (session_id={:?}, cwd={:?})",
+            payload.hook_event_name,
+            payload.session_id,
+            payload.cwd,
+        );
+        return;
+    };
     let (notify_on_attention, notify_on_done) = {
         let cc = &editor.config().claude_code;
         (cc.notify_on_attention, cc.notify_on_done)
     };
-    let new_status = status_for(&payload.hook_event_name, payload.message.clone());
+    let new_status = status_for(
+        &payload.hook_event_name,
+        payload.notification_type.as_deref(),
+        payload.message.clone(),
+    );
 
     // "Already there": the panel is open AND this session is focused AND the
     // terminal (not the list) has focus — i.e. the user is in this thread.
@@ -210,6 +264,14 @@ fn apply_to_editor(editor: &mut Editor, compositor: &mut Compositor, payload: Ho
         .is_some();
     let user_there =
         panel_open && editor.agents.focused == Some(id) && !editor.agents.list_focused;
+
+    log::debug!(
+        "agent hook: event={} type={:?} -> status={:?} (panel_open={panel_open}, user_there={user_there}); toast {}",
+        payload.hook_event_name,
+        payload.notification_type,
+        new_status,
+        if user_there { "suppressed (you're in this session)" } else { "eligible" },
+    );
 
     // Mutate the session in a scope so the borrow ends before we push a toast.
     let mut toast = None;
@@ -334,7 +396,7 @@ mod tests {
         assert_eq!(p.hook_event_name, "SessionStart");
         assert_eq!(p.session_id.as_deref(), Some("abc"));
         assert!(matches!(
-            status_for(&p.hook_event_name, None),
+            status_for(&p.hook_event_name, None, None),
             Some(AgentStatus::Starting)
         ));
     }
@@ -347,24 +409,54 @@ mod tests {
         assert_eq!(p.tool_name.as_deref(), Some("Edit"));
         assert_eq!(p.tool_input.unwrap().file_path.as_deref(), Some("/a/b.rs"));
         assert!(matches!(
-            status_for(&p.hook_event_name, None),
+            status_for(&p.hook_event_name, None, None),
             Some(AgentStatus::Working)
         ));
     }
 
     #[test]
-    fn notification_carries_message() {
-        let p = parse(r#"{"hook_event_name":"Notification","message":"Permission needed"}"#);
-        match status_for(&p.hook_event_name, p.message.clone()) {
-            Some(AgentStatus::AwaitingAttention(m)) => assert_eq!(m, "Permission needed"),
+    fn permission_prompt_is_attention_with_message() {
+        let p = parse(
+            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Allow Bash?"}"#,
+        );
+        match status_for(
+            &p.hook_event_name,
+            p.notification_type.as_deref(),
+            p.message.clone(),
+        ) {
+            Some(AgentStatus::AwaitingAttention(m)) => assert_eq!(m, "Allow Bash?"),
             other => panic!("expected attention, got {other:?}"),
         }
     }
 
     #[test]
+    fn idle_notification_is_done_not_attention() {
+        let p = parse(r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#);
+        assert!(matches!(
+            status_for(&p.hook_event_name, p.notification_type.as_deref(), None),
+            Some(AgentStatus::Done)
+        ));
+    }
+
+    #[test]
+    fn informational_notification_is_noop() {
+        let p = parse(r#"{"hook_event_name":"Notification","notification_type":"auth_success"}"#);
+        assert!(status_for(&p.hook_event_name, p.notification_type.as_deref(), None).is_none());
+    }
+
+    #[test]
+    fn typeless_notification_still_signals_attention() {
+        let p = parse(r#"{"hook_event_name":"Notification","message":"heads up"}"#);
+        assert!(matches!(
+            status_for(&p.hook_event_name, None, p.message.clone()),
+            Some(AgentStatus::AwaitingAttention(_))
+        ));
+    }
+
+    #[test]
     fn unknown_event_is_noop() {
         let p = parse(r#"{"hook_event_name":"SomethingNew","session_id":"s","extra":42}"#);
-        assert!(status_for(&p.hook_event_name, None).is_none());
+        assert!(status_for(&p.hook_event_name, None, None).is_none());
     }
 
     #[test]
@@ -372,7 +464,7 @@ mod tests {
         let p = parse(r#"{"hook_event_name":"Stop"}"#);
         assert!(p.session_id.is_none());
         assert!(matches!(
-            status_for(&p.hook_event_name, None),
+            status_for(&p.hook_event_name, None, None),
             Some(AgentStatus::Done)
         ));
     }
