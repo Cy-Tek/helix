@@ -127,10 +127,25 @@ impl Component for ClaudePanel {
         // doubles as a focus affordance: it shows the session count and whether
         // keystrokes currently drive the list or the focused terminal.
         let focus_tag = if list_focused { "list" } else { "terminal" };
+        let (total_turns, total_cost) =
+            ctx.editor.agents.iter().fold((0u32, 0.0f64), |(t, c), s| {
+                (
+                    t.saturating_add(s.stats.turn_count),
+                    c + s.stats.cost_usd,
+                )
+            });
         let title = if session_count == 0 {
             "─ ◇ Claude Agents ".to_string()
         } else {
-            format!("─ ◇ Claude Agents · {session_count} · ⌨ {focus_tag} ")
+            let mut t = format!("─ ◇ Claude Agents · {session_count} · {focus_tag}");
+            if total_turns > 0 {
+                t.push_str(&format!(" · {total_turns} turns"));
+            }
+            if total_cost > 0.0 {
+                t.push_str(&format!(" · ${total_cost:.2}"));
+            }
+            t.push(' ');
+            t
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -494,6 +509,7 @@ pub(crate) fn worktree_branch_prompt() -> Prompt {
                         Some(branch.to_string()),
                         path,
                         Some(info),
+                        None,
                     ) {
                         cx.editor.set_error(err.to_string());
                     }

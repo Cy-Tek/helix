@@ -3137,7 +3137,46 @@ fn claude_new_worktree(
 
     let info = crate::agent::worktree::create(cx.editor, &branch)?;
     let path = info.path.clone();
-    ui::claude::spawn_session_in(cx.editor, Some(branch), path, Some(info))?;
+    ui::claude::spawn_session_in(cx.editor, Some(branch), path, Some(info), None)?;
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn claude_resume(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let session_id = args
+        .first()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("usage: :claude-resume <session-id>"))?;
+
+    let cwd = helix_core::find_workspace().0;
+    let short: String = session_id.chars().take(8).collect();
+    ui::claude::spawn_session_in(
+        cx.editor,
+        Some(format!("resumed {short}")),
+        cwd,
+        None,
+        Some(session_id),
+    )?;
 
     let callback = async move {
         let call: job::Callback = job::Callback::EditorCompositor(Box::new(
@@ -3230,6 +3269,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-resume",
+        aliases: &[],
+        doc: "Resume a Claude session by id (--resume) in a new agent panel session.",
+        fun: claude_resume,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
             ..Signature::DEFAULT
         },
     },

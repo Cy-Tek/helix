@@ -40,12 +40,28 @@ struct HookPayload {
     tool_name: Option<String>,
     #[serde(default)]
     tool_input: Option<ToolInput>,
+    /// Cumulative session cost, if the hook reports it (e.g. on `Stop`). Both
+    /// spellings are accepted since the field name isn't firmly documented.
+    #[serde(default)]
+    total_cost_usd: Option<f64>,
+    #[serde(default)]
+    cost_usd: Option<f64>,
+    #[serde(default)]
+    usage: Option<Usage>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct ToolInput {
     #[serde(default)]
     file_path: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct Usage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
 }
 
 /// Map a hook event name to the status it implies, or `None` for events that
@@ -173,24 +189,57 @@ fn apply_to_editor(editor: &mut Editor, payload: HookPayload) {
         });
 
     let Some(id) = id else { return };
-    let Some(session) = editor.agents.get_mut(id) else {
-        return;
-    };
+    let notify_on_attention = editor.config().claude_code.notify_on_attention;
+    let new_status = status_for(&payload.hook_event_name, payload.message.clone());
 
-    if let Some(status) = status_for(&payload.hook_event_name, payload.message.clone()) {
-        session.status = status;
-    }
-    session.last_activity = std::time::Instant::now();
-
-    // Record files the agent edited, for the Phase 5 diff view.
-    if payload.hook_event_name == "PostToolUse"
-        && matches!(
-            payload.tool_name.as_deref(),
-            Some("Edit") | Some("Write") | Some("MultiEdit")
-        )
+    // Mutate the session in a scope so the borrow ends before we touch the
+    // editor again to post a notification.
+    let mut attention = None;
     {
-        if let Some(file) = payload.tool_input.and_then(|t| t.file_path) {
-            session.edited_files.insert(PathBuf::from(file));
+        let Some(session) = editor.agents.get_mut(id) else {
+            return;
+        };
+
+        if let Some(status) = &new_status {
+            session.status = status.clone();
+            if let AgentStatus::AwaitingAttention(message) = status {
+                attention = Some((session.display_name.clone(), message.clone()));
+            }
+        }
+        session.last_activity = std::time::Instant::now();
+
+        // Accounting from the Stop payload (best-effort; fields may be absent).
+        if matches!(payload.hook_event_name.as_str(), "Stop" | "SubagentStop") {
+            session.stats.turn_count = session.stats.turn_count.saturating_add(1);
+        }
+        if let Some(cost) = payload.total_cost_usd.or(payload.cost_usd) {
+            session.stats.cost_usd = cost;
+        }
+        if let Some(usage) = &payload.usage {
+            if let Some(input) = usage.input_tokens {
+                session.stats.input_tokens = input;
+            }
+            if let Some(output) = usage.output_tokens {
+                session.stats.output_tokens = output;
+            }
+        }
+
+        // Record files the agent edited, for the diff view.
+        if payload.hook_event_name == "PostToolUse"
+            && matches!(
+                payload.tool_name.as_deref(),
+                Some("Edit") | Some("Write") | Some("MultiEdit")
+            )
+        {
+            if let Some(file) = payload.tool_input.and_then(|t| t.file_path) {
+                session.edited_files.insert(PathBuf::from(file));
+            }
+        }
+    }
+
+    if notify_on_attention {
+        if let Some((name, message)) = attention {
+            editor.set_status(format!("Claude agent '{name}' needs attention: {message}"));
         }
     }
 }
@@ -290,6 +339,17 @@ mod tests {
             status_for(&p.hook_event_name, None),
             Some(AgentStatus::Done)
         ));
+    }
+
+    #[test]
+    fn stop_payload_carries_cost_and_usage() {
+        let p = parse(
+            r#"{"hook_event_name":"Stop","session_id":"s","total_cost_usd":0.42,"usage":{"input_tokens":1200,"output_tokens":340}}"#,
+        );
+        assert_eq!(p.total_cost_usd, Some(0.42));
+        let usage = p.usage.expect("usage present");
+        assert_eq!(usage.input_tokens, Some(1200));
+        assert_eq!(usage.output_tokens, Some(340));
     }
 
     #[test]

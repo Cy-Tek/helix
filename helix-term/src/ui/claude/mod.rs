@@ -23,17 +23,20 @@ pub fn spawn_new_session(
     name: Option<String>,
 ) -> anyhow::Result<AgentSessionId> {
     let cwd = helix_core::find_workspace().0;
-    spawn_session_in(editor, name, cwd, None)
+    spawn_session_in(editor, name, cwd, None, None)
 }
 
 /// Spawn an agent session rooted at `cwd` (e.g. a git worktree). `worktree`
-/// records ownership for cleanup. Wires Claude Code hooks for live status when
-/// possible, falling back to a plain spawn if that setup fails.
+/// records ownership for cleanup. When `resume` is `Some(session_id)` the agent
+/// continues that Claude session (`--resume`) instead of starting a fresh one.
+/// Wires Claude Code hooks for live status when possible, falling back to a
+/// plain spawn if that setup fails.
 pub fn spawn_session_in(
     editor: &mut Editor,
     name: Option<String>,
     cwd: PathBuf,
     worktree: Option<WorktreeInfo>,
+    resume: Option<String>,
 ) -> anyhow::Result<AgentSessionId> {
     // Copy the needed config out so the config guard is dropped before the
     // mutable borrow of `editor.agents`.
@@ -54,12 +57,23 @@ pub fn spawn_session_in(
 
     let display_name = name.unwrap_or_else(|| format!("agent {}", editor.agents.len() + 1));
 
+    // The session id we track: reuse the resumed id (so hooks still correlate),
+    // otherwise mint a fresh uuid.
+    let session_id = resume
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     // Best-effort hooks wiring: live status needs the socket + per-session
     // settings, but a failure here must not stop the agent from spawning.
     let (claude_session_id, settings_path, mut args) = match setup_session_hooks(editor) {
-        Ok((session_id, settings)) => {
+        Ok(settings) => {
+            let id_flag = if resume.is_some() {
+                "--resume"
+            } else {
+                "--session-id"
+            };
             let args = vec![
-                "--session-id".to_string(),
+                id_flag.to_string(),
                 session_id.clone(),
                 "--settings".to_string(),
                 settings.to_string_lossy().into_owned(),
@@ -68,7 +82,12 @@ pub fn spawn_session_in(
         }
         Err(err) => {
             log::warn!("Claude agent hooks disabled (status will not update): {err}");
-            (None, None, Vec::new())
+            // Still honor resume so the conversation continues.
+            let args = match &resume {
+                Some(id) => vec!["--resume".to_string(), id.clone()],
+                None => Vec::new(),
+            };
+            (resume.clone(), None, args)
         }
     };
     // Caller-supplied extra args come first, our control flags last.
@@ -93,10 +112,9 @@ pub fn spawn_session_in(
 }
 
 /// Ensure the hook listener is running and generate this session's settings
-/// file. Returns the `--session-id` uuid and the settings path.
-fn setup_session_hooks(editor: &mut Editor) -> anyhow::Result<(String, PathBuf)> {
+/// file. Returns the settings path.
+fn setup_session_hooks(editor: &mut Editor) -> anyhow::Result<PathBuf> {
     let socket = crate::agent::hooks::ensure_listener(editor)?;
     let settings = crate::agent::hooks::generate_settings(&socket)?;
-    let session_id = uuid::Uuid::new_v4().to_string();
-    Ok((session_id, settings))
+    Ok(settings)
 }
