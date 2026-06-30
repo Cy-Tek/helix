@@ -3073,7 +3073,238 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
+fn open_terminal(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
+    let pane = ui::terminal::spawn_terminal(cx.editor, &args)?;
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                compositor.push(Box::new(overlaid(pane)));
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn claude_new(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name = args.first().map(|s| s.to_string());
+    ui::claude::spawn_new_session(cx.editor, name)?;
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn claude_new_worktree(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let branch = args
+        .first()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("agent-{}", cx.editor.agents.len() + 1));
+
+    let info = crate::agent::worktree::create(cx.editor, &branch)?;
+    let path = info.path.clone();
+    ui::claude::spawn_session_in(cx.editor, Some(branch), path, Some(info), None)?;
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn claude_resume(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let session_id = args
+        .first()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("usage: :claude-resume <session-id>"))?;
+
+    let cwd = helix_core::find_workspace().0;
+    let short: String = session_id.chars().take(8).collect();
+    ui::claude::spawn_session_in(
+        cx.editor,
+        Some(format!("resumed {short}")),
+        cwd,
+        None,
+        Some(session_id),
+    )?;
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::claude::{ClaudePanel, ID};
+                use crate::ui::overlay::Overlay;
+                if compositor.find_id::<Overlay<ClaudePanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(ClaudePanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn claude_close(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(id) = cx.editor.agents.focused else {
+        cx.editor.set_status("No focused agent session");
+        return Ok(());
+    };
+    // A worktree-owning session is closed via a confirm prompt so the on-disk
+    // worktree is never silently discarded.
+    if let Some(info) = cx.editor.agents.get(id).and_then(|s| s.worktree.clone()) {
+        let dirty = crate::agent::worktree::is_dirty(&info.path);
+        cx.jobs.callback(async move {
+            Ok(job::Callback::EditorCompositor(Box::new(
+                move |_editor: &mut Editor, compositor: &mut Compositor| {
+                    let prompt = crate::ui::claude::panel::worktree_close_prompt(id, info, dirty);
+                    compositor.push(Box::new(prompt));
+                },
+            )))
+        });
+    } else {
+        cx.editor.agents.remove(id);
+    }
+    Ok(())
+}
+
+fn claude_list(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = cx.editor.agents.len();
+    cx.editor
+        .set_status(format!("{count} Claude agent session(s) running"));
+    Ok(())
+}
+
 pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
+    TypableCommand {
+        name: "terminal",
+        aliases: &["term"],
+        doc: "Open an embedded terminal. With arguments, runs that command; otherwise the configured shell.",
+        fun: open_terminal,
+        completer: CommandCompleter::all(completers::program),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-new",
+        aliases: &[],
+        doc: "Start a new Claude agent session (optionally named) and open the agent panel.",
+        fun: claude_new,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-new-worktree",
+        aliases: &[],
+        doc: "Create a git worktree (named branch, default agent-N) and start a Claude agent in it.",
+        fun: claude_new_worktree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-resume",
+        aliases: &[],
+        doc: "Resume a Claude session by id (--resume) in a new agent panel session.",
+        fun: claude_resume,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-close",
+        aliases: &[],
+        doc: "Close the focused Claude agent session.",
+        fun: claude_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-list",
+        aliases: &[],
+        doc: "Show how many Claude agent sessions are running.",
+        fun: claude_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
     TypableCommand {
         name: "exit",
         aliases: &["x", "xit"],

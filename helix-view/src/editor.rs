@@ -450,6 +450,10 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Markdown preview configuration.
     pub markdown_preview: MarkdownPreviewConfig,
+    /// Claude Code agent panel configuration.
+    pub claude_code: ClaudeCodeConfig,
+    /// Embedded (in-editor) terminal configuration.
+    pub embedded_terminal: EmbeddedTerminalConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
 }
@@ -613,6 +617,65 @@ impl Default for MarkdownPreviewConfig {
             diagram_renderer_args: Vec::new(),
             max_width: u16::MAX,
             diagram_scale: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ClaudeCodeConfig {
+    /// Path or name of the Claude Code CLI binary. Defaults to `claude`.
+    pub binary_path: String,
+    /// Extra arguments appended to every `claude` invocation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_args: Vec<String>,
+    /// Root directory under which per-session git worktrees are created.
+    /// Defaults to `<repo>/.helix-worktrees` when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
+    /// Width, in columns, of the session-list pane on the left of the panel.
+    pub list_width: u16,
+    /// Maximum number of concurrent agent sessions.
+    pub max_sessions: usize,
+    /// Scrollback history kept per embedded terminal, in lines.
+    pub scrollback_lines: usize,
+    /// Toast when a session needs attention (is blocked / asks a question).
+    pub notify_on_attention: bool,
+    /// Toast when a session finishes a turn.
+    pub notify_on_done: bool,
+}
+
+impl Default for ClaudeCodeConfig {
+    fn default() -> Self {
+        Self {
+            binary_path: String::from("claude"),
+            extra_args: Vec::new(),
+            worktree_root: None,
+            list_width: 32,
+            max_sessions: 8,
+            scrollback_lines: 10_000,
+            notify_on_attention: true,
+            notify_on_done: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct EmbeddedTerminalConfig {
+    /// Shell/program launched by `:terminal` when no program is given. Falls
+    /// back to the `$SHELL` environment variable, then `/bin/sh`, when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// Scrollback history kept per embedded terminal, in lines.
+    pub scrollback_lines: usize,
+}
+
+impl Default for EmbeddedTerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            scrollback_lines: 10_000,
         }
     }
 }
@@ -1256,6 +1319,8 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
             markdown_preview: MarkdownPreviewConfig::default(),
+            claude_code: ClaudeCodeConfig::default(),
+            embedded_terminal: EmbeddedTerminalConfig::default(),
             insecure: false,
         }
     }
@@ -1313,6 +1378,9 @@ pub struct Editor {
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
 
+    /// Managed Claude Code agent sessions (embedded `claude` terminals).
+    pub agents: crate::agent::AgentRegistry,
+
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
     /// last_theme is used for theme previews. We store the current theme here,
@@ -1328,6 +1396,9 @@ pub struct Editor {
     pub last_selection: Option<Selection>,
 
     pub status_msg: Option<(Cow<'static, str>, Severity)>,
+    /// Generic, stackable toast notifications (drawn on top of everything by
+    /// helix-term). Distinct from the single-line `status_msg`.
+    pub notifications: crate::notifications::Notifications,
     pub autoinfo: Option<Info>,
 
     pub config: Arc<dyn DynAccess<Config>>,
@@ -1469,6 +1540,7 @@ impl Editor {
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
+            agents: crate::agent::AgentRegistry::new(),
             syn_loader,
             theme_loader,
             last_theme: None,
@@ -1478,6 +1550,7 @@ impl Editor {
                 |config: &Config| &config.clipboard_provider,
             ))),
             status_msg: None,
+            notifications: crate::notifications::Notifications::default(),
             autoinfo: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             redraw_timer: Box::pin(sleep(Duration::MAX)),
@@ -1579,6 +1652,11 @@ impl Editor {
         let warning = warning.into();
         log::warn!("editor warning: {}", warning);
         self.status_msg = Some((warning, Severity::Warning));
+    }
+
+    /// Push a generic toast notification. Returns its id (for later dismissal).
+    pub fn push_notification(&mut self, notification: crate::notifications::Notification) -> u64 {
+        self.notifications.push(notification)
     }
 
     #[inline]

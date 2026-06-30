@@ -26,6 +26,12 @@ fn main() -> Result<()> {
 async fn main_impl() -> Result<i32> {
     let args = Args::parse_args().context("could not parse arguments")?;
 
+    // Hidden forwarder mode for Claude Code agent hooks: ship the hook payload
+    // on stdin to the editor's socket and exit, before any editor setup.
+    if let Some(socket) = &args.agent_hook_emit {
+        return Ok(helix_term::agent::hooks::forward_stdin_to_socket(socket));
+    }
+
     helix_loader::initialize_config_file(args.config_file.clone());
     helix_loader::initialize_log_file(args.log_file.clone());
 

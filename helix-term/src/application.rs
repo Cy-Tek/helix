@@ -285,6 +285,8 @@ impl Application {
         let surface = self.terminal.current_buffer_mut();
 
         self.compositor.render(area, surface, &mut cx);
+        // Toasts paint on top of every compositor layer.
+        crate::ui::notifications::render(&mut self.editor, area, surface);
         let (pos, kind) = self.compositor.cursor(area, &self.editor);
         // reset cursor cache
         self.editor.cursor_cache.reset();
@@ -1361,6 +1363,9 @@ impl Application {
             log::error!("Error writing: {}", err);
             errs.push(err);
         }
+
+        // Terminate any running Claude agent child processes.
+        self.editor.agents.shutdown_all();
 
         if self.editor.close_language_servers(None).await.is_err() {
             log::error!("Timed out waiting for language servers to shutdown");

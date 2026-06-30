@@ -20,6 +20,9 @@ pub struct Args {
     pub config_file: Option<PathBuf>,
     pub files: IndexMap<PathBuf, Vec<Position>>,
     pub working_directory: Option<PathBuf>,
+    /// Hidden mode: forward a Claude Code hook payload from stdin to the editor's
+    /// socket and exit. Set by `--agent-hook-emit <socket>`.
+    pub agent_hook_emit: Option<PathBuf>,
 }
 
 impl Args {
@@ -76,6 +79,10 @@ impl Args {
                 "--log" => match argv.next().as_deref() {
                     Some(path) => args.log_file = Some(path.into()),
                     None => anyhow::bail!("--log must specify a path to write"),
+                },
+                "--agent-hook-emit" => match argv.next().as_deref() {
+                    Some(path) => args.agent_hook_emit = Some(path.into()),
+                    None => anyhow::bail!("--agent-hook-emit must specify a socket path"),
                 },
                 "-w" | "--working-dir" => match argv.next().as_deref() {
                     Some(path) => {

@@ -515,10 +515,19 @@ pub(super) fn push_capsule_separator<'a>(
     accent_style: Style,
     line_style: Style,
 ) {
-    spans.0.push(Span::styled(
-        format!(" {} ", glyphs.separator),
-        line_style.patch(accent_style),
-    ));
+    // The Nerd separator (✦) is drawn ~2 cells wide by the font, but the layout
+    // only reserves 1 cell — so its right half bleeds into the trailing space
+    // and the glyph ends up flush against the next capsule. Pad the right with
+    // an extra space so it reads as visually centered between the pills. The
+    // Plain separator (*) is a normal 1-cell glyph and stays symmetric.
+    let separator = if glyphs.left_cap == "(" {
+        format!(" {} ", glyphs.separator)
+    } else {
+        format!(" {}  ", glyphs.separator)
+    };
+    spans
+        .0
+        .push(Span::styled(separator, line_style.patch(accent_style)));
 }
 
 fn get_render_function<'a, F>(element_id: StatusLineElementID) -> impl Fn(&mut RenderContext<'a>, F)
