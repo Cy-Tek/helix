@@ -2,6 +2,10 @@
 //! and the focused session's view (terminal, or — in a later phase — a diff of
 //! its edits) on the right.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use helix_core::Position;
 use helix_view::agent::{AgentStatus, RightPane};
 use helix_view::graphics::{CursorKind, Modifier, Rect};
@@ -13,20 +17,63 @@ use tui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::compositor::{Component, Context, EventResult};
 use crate::ui::claude::{spawn_new_session, ID};
+use crate::ui::spinner::Spinner;
 use crate::ui::terminal;
 use crate::{ctrl, key};
 
 /// The floating agent panel. Holds no session state of its own — it reads
-/// `editor.agents` afresh each render — only transient layout/cursor info.
+/// `editor.agents` afresh each render — only transient view state (cursor,
+/// spinner, animation ticker).
 pub struct ClaudePanel {
     /// Absolute cursor position computed during the last render, surfaced via
     /// [`Component::cursor`].
     cursor: Option<Position>,
+    /// Drives the animated glyph on `Working`/`Starting` rows. Time-based, so a
+    /// single shared spinner keeps every animating row in sync.
+    spinner: Spinner,
+    /// Live only while some session is animating; requests periodic redraws so
+    /// the spinner advances even when no input/output events arrive. Dropped
+    /// (and its task stopped) when nothing is animating or the panel closes.
+    ticker: Option<AnimationTicker>,
 }
 
 impl ClaudePanel {
     pub fn new() -> Self {
-        Self { cursor: None }
+        let mut spinner = Spinner::dots(80);
+        spinner.start();
+        Self {
+            cursor: None,
+            spinner,
+            ticker: None,
+        }
+    }
+}
+
+/// A background task that calls [`helix_event::request_redraw`] at a fixed
+/// cadence so time-based spinners animate while the panel is otherwise idle.
+/// The task exits when this guard is dropped.
+struct AnimationTicker {
+    alive: Arc<AtomicBool>,
+}
+
+impl AnimationTicker {
+    fn start() -> Self {
+        let alive = Arc::new(AtomicBool::new(true));
+        let stop = alive.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            while stop.load(Ordering::Relaxed) {
+                interval.tick().await;
+                helix_event::request_redraw();
+            }
+        });
+        Self { alive }
+    }
+}
+
+impl Drop for AnimationTicker {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
     }
 }
 
@@ -66,13 +113,22 @@ impl Component for ClaudePanel {
         }
 
         let list_focused = ctx.editor.agents.list_focused;
+        let session_count = ctx.editor.agents.len();
 
-        // Rounded border framing the whole panel, with an inset title.
+        // Rounded border framing the whole panel, with an inset title that
+        // doubles as a focus affordance: it shows the session count and whether
+        // keystrokes currently drive the list or the focused terminal.
+        let focus_tag = if list_focused { "list" } else { "terminal" };
+        let title = if session_count == 0 {
+            "─ ◇ Claude Agents ".to_string()
+        } else {
+            format!("─ ◇ Claude Agents · {session_count} · ⌨ {focus_tag} ")
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border_style)
-            .title(Span::styled("─ ◇ Claude Agents ", title_style));
+            .title(Span::styled(title, title_style));
         let inner = block.inner(area);
         block.render(area, surface);
 
@@ -99,6 +155,7 @@ impl Component for ClaudePanel {
                 false,
             );
             self.cursor = None;
+            self.ticker = None;
             return;
         }
 
@@ -113,15 +170,41 @@ impl Component for ClaudePanel {
             .max(12);
         let focused_id = ctx.editor.agents.focused;
 
-        let rows: Vec<(helix_view::agent::AgentSessionId, String, AgentStatus, RightPane)> = ctx
+        type Row = (
+            helix_view::agent::AgentSessionId,
+            String,
+            AgentStatus,
+            RightPane,
+            Option<String>,
+        );
+        let rows: Vec<Row> = ctx
             .editor
             .agents
             .iter()
-            .map(|s| (s.id, s.display_name.clone(), s.status.clone(), s.right_pane))
+            .map(|s| {
+                (
+                    s.id,
+                    s.display_name.clone(),
+                    s.status.clone(),
+                    s.right_pane,
+                    s.worktree.as_ref().map(|w| w.branch.clone()),
+                )
+            })
             .collect();
 
+        // Start/stop the redraw ticker so animated rows keep spinning while idle.
+        let animating = rows.iter().any(|(_, _, status, ..)| {
+            matches!(status, AgentStatus::Working | AgentStatus::Starting)
+        });
+        match (animating, self.ticker.is_some()) {
+            (true, false) => self.ticker = Some(AnimationTicker::start()),
+            (false, true) => self.ticker = None,
+            _ => {}
+        }
+
+        let dim_style = text_style.add_modifier(Modifier::DIM);
         let list_area = inner.with_width(list_width);
-        for (i, (id, name, status, _)) in rows.iter().enumerate() {
+        for (i, (id, name, status, _, branch)) in rows.iter().enumerate() {
             let y = list_area.y + i as u16;
             if y >= list_area.bottom() {
                 break;
@@ -131,16 +214,28 @@ impl Component for ClaudePanel {
             if status.is_awaiting() {
                 style = style.patch(attention_style);
             }
-            // Two spaces after the glyph so it doesn't sit squished against the
-            // name (these status symbols are drawn near the full cell width).
-            let line = format!("{}  {}", status_glyph(status), name);
-            surface.set_stringn(
-                list_area.x + 1,
-                y,
-                &line,
-                list_width.saturating_sub(2) as usize,
-                style,
-            );
+            // Animate the glyph for in-flight rows; static symbol otherwise. The
+            // two trailing spaces keep the near-full-width symbol off the name.
+            let glyph = match status {
+                AgentStatus::Working | AgentStatus::Starting => {
+                    self.spinner.frame().unwrap_or("●")
+                }
+                other => status_glyph(other),
+            };
+            let head = format!("{glyph}  {name}");
+            let avail = list_width.saturating_sub(2) as usize;
+            surface.set_stringn(list_area.x + 1, y, &head, avail, style);
+
+            // Worktree branch as a dim, right-aligned suffix when it fits.
+            if let Some(branch) = branch {
+                let suffix = format!("⌥{branch}");
+                let suffix_cells = suffix.chars().count() as u16;
+                let head_cells = head.chars().count() as u16;
+                if list_width > head_cells + suffix_cells + 2 {
+                    let sx = list_area.x + list_width - suffix_cells - 1;
+                    surface.set_stringn(sx, y, &suffix, suffix_cells as usize, dim_style);
+                }
+            }
         }
 
         // Divider column between list and content, tee-joined to the border.
@@ -162,7 +257,7 @@ impl Component for ClaudePanel {
         let right_pane = rows
             .iter()
             .find(|(id, ..)| Some(*id) == focused_id)
-            .map(|(.., pane)| *pane)
+            .map(|(_, _, _, pane, _)| *pane)
             .unwrap_or(RightPane::Terminal);
 
         match right_pane {
