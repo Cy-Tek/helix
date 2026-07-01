@@ -151,6 +151,15 @@ impl EditorView {
             if viewport.right() != view.area.right() {
                 Self::draw_split_border(surface, view, &editor.theme);
             }
+            // The statusline still renders below a terminal tab (the emulator
+            // grid fills only the inner area, which reserves this row).
+            let statusline_area = view
+                .area
+                .clip_top(view.area.height.saturating_sub(1))
+                .clip_bottom(1); // -1 from bottom to remove commandline
+            let mut context =
+                statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
+            statusline::render(&mut context, statusline_area, surface);
             return;
         }
 

@@ -851,7 +851,9 @@ fn render_file_name<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let title = {
+    let title = if let Some(name) = context.editor.doc_display_name(context.doc.id()) {
+        format!(" {} ", name)
+    } else {
         let rel_path = context.doc.relative_path();
         let path = rel_path
             .as_ref()
@@ -908,7 +910,9 @@ fn render_file_base_name<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let title = {
+    let title = if let Some(name) = context.editor.doc_display_name(context.doc.id()) {
+        format!(" {} ", name)
+    } else {
         let rel_path = context.doc.relative_path();
         let path = rel_path
             .as_ref()
