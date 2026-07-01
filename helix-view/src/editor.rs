@@ -1352,6 +1352,21 @@ use futures_util::stream::{Flatten, Once};
 
 type Diagnostics = BTreeMap<Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>>;
 
+slotmap::new_key_type! {
+    /// Editor-local handle to a standalone (`:terminal`) embedded terminal,
+    /// stable across removals — mirrors `AgentSessionId` for agents.
+    pub struct TerminalId;
+}
+
+/// What a terminal-backed buffer resolves to.
+#[derive(Clone, Copy, Debug)]
+pub enum TerminalRef {
+    /// An agent session's terminal (owned by `Editor::agents`).
+    Agent(crate::agent::AgentSessionId),
+    /// A standalone terminal (owned by `Editor::terminals`).
+    Standalone(TerminalId),
+}
+
 pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
@@ -1380,6 +1395,13 @@ pub struct Editor {
 
     /// Managed Claude Code agent sessions (embedded `claude` terminals).
     pub agents: crate::agent::AgentRegistry,
+    /// Standalone embedded terminals (the `:terminal` command), kept alive
+    /// independently of any view so a terminal survives closing its tab.
+    pub terminals: slotmap::SlotMap<TerminalId, crate::terminal::TerminalHandle>,
+    /// Maps a host document to the terminal it displays. A host document is a
+    /// read-only, empty scratch buffer that exists only to make a terminal a
+    /// navigable buffer (gp/gn, splits, bufferline).
+    pub terminal_docs: std::collections::HashMap<DocumentId, TerminalRef>,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1541,6 +1563,8 @@ impl Editor {
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
             agents: crate::agent::AgentRegistry::new(),
+            terminals: slotmap::SlotMap::with_key(),
+            terminal_docs: std::collections::HashMap::new(),
             syn_loader,
             theme_loader,
             last_theme: None,
