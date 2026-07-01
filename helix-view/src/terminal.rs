@@ -168,13 +168,19 @@ impl TerminalHandle {
         let term = self.term.lock();
         let content = term.renderable_content();
 
+        // When scrolled into the scrollback, the emulator reports absolute buffer
+        // lines (negative above the active screen). Adding the display offset maps
+        // them back to viewport rows (0 = top of the visible area), so scrollback
+        // actually renders instead of being dropped by the `line < 0` guard.
+        let display_offset = content.display_offset as i32;
+
         let mut cells = Vec::new();
         for indexed in content.display_iter {
             let cell: &Cell = indexed.cell;
             if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                 continue;
             }
-            let line = indexed.point.line.0;
+            let line = indexed.point.line.0 + display_offset;
             if line < 0 {
                 continue;
             }
@@ -194,7 +200,7 @@ impl TerminalHandle {
         }
 
         let cursor = if content.cursor.shape != CursorShape::Hidden {
-            let row = content.cursor.point.line.0;
+            let row = content.cursor.point.line.0 + display_offset;
             let col = content.cursor.point.column.0;
             if row >= 0 {
                 Some((row as u16, col as u16))
