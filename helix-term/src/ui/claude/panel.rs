@@ -174,7 +174,7 @@ impl Component for ClaudePanel {
         } else if list_focused {
             "j/k select · enter focus · Tab edits · t tab · n new · q close · C-q quit"
         } else {
-            "esc/C-o session list · S-esc interrupt · C-q close panel"
+            "esc/C-o session list · S-esc interrupt · C-q quit session"
         };
         terminal::draw_border_hint(surface, area, hint, border_style);
 
@@ -485,35 +485,21 @@ impl ClaudePanel {
                 // Start the edits view at the top each time it's opened.
                 self.diff_scroll = 0;
             }
-            key!('q') => {
-                if let Some(id) = ctx.editor.agents.focused {
-                    // A worktree-owning session asks before deleting the tree.
-                    let worktree = ctx.editor.agents.get(id).and_then(|s| s.worktree.clone());
-                    if let Some(info) = worktree {
-                        let dirty = crate::agent::worktree::is_dirty(&info.path);
-                        let prompt = worktree_close_prompt(id, info, dirty);
-                        return EventResult::Consumed(Some(Box::new(move |compositor, _| {
-                            compositor.push(Box::new(prompt));
-                        })));
-                    }
-                    ctx.editor.agents.remove(id);
-                }
-                if ctx.editor.agents.is_empty() {
-                    return close_panel();
-                }
-            }
+            // q/Esc dismiss the panel; the sessions keep running in the
+            // background (reopenable via the panel or as tabs). Only C-q quits.
+            key!('q') => return close_panel(),
             key!(Esc) => return close_panel(),
-            k if k == ctrl!('q') => return close_panel(),
+            k if k == ctrl!('q') => return quit_focused_session(ctx),
             _ => {}
         }
         EventResult::Consumed(None)
     }
 
     fn handle_terminal_key(&mut self, key: KeyEvent, ctx: &mut Context) -> EventResult {
-        // Close the whole panel directly, so the terminal can never trap the
-        // user. Mirrors the standalone `:terminal` detach chord (C-q).
+        // C-q quits the focused session (kills it). Esc / C-o back out to the
+        // list non-destructively, so the terminal can never trap the user.
         if key == ctrl!('q') {
-            return close_panel();
+            return quit_focused_session(ctx);
         }
         // Escape hatch back to the list (to reach other sessions / new / close).
         if key == ctrl!('o') {
@@ -546,6 +532,29 @@ fn close_panel() -> EventResult {
     EventResult::Consumed(Some(Box::new(|compositor, _| {
         compositor.remove(ID);
     })))
+}
+
+/// Quit (terminate) the focused agent session. A worktree-owning session first
+/// prompts before deleting its tree. Once no sessions remain, the panel closes.
+/// Distinct from [`close_panel`], which only dismisses the panel and leaves
+/// every session running.
+fn quit_focused_session(ctx: &mut Context) -> EventResult {
+    if let Some(id) = ctx.editor.agents.focused {
+        // A worktree-owning session asks before deleting the tree.
+        let worktree = ctx.editor.agents.get(id).and_then(|s| s.worktree.clone());
+        if let Some(info) = worktree {
+            let dirty = crate::agent::worktree::is_dirty(&info.path);
+            let prompt = worktree_close_prompt(id, info, dirty);
+            return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                compositor.push(Box::new(prompt));
+            })));
+        }
+        ctx.editor.agents.remove(id);
+    }
+    if ctx.editor.agents.is_empty() {
+        return close_panel();
+    }
+    EventResult::Consumed(None)
 }
 
 /// Prompt for a branch name, then create a git worktree and spawn an agent in
