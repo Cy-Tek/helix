@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use helix_core::Position;
-use helix_view::graphics::{CursorKind, Modifier, Rect, Style};
-use helix_view::input::{Event, KeyEvent};
+use helix_view::graphics::{Color, CursorKind, Modifier, Rect, Style};
+use helix_view::input::{Event, KeyEvent, MouseEvent, MouseEventKind};
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::terminal::TerminalHandle;
 use helix_view::Editor;
@@ -101,6 +101,9 @@ pub struct TerminalPane {
     title: String,
     cursor: Option<Position>,
     exited: bool,
+    /// Grid content rect (inside the border) from the last render, used to map
+    /// absolute mouse coordinates to terminal cells.
+    grid: Rect,
 }
 
 impl TerminalPane {
@@ -110,8 +113,40 @@ impl TerminalPane {
             title,
             cursor: None,
             exited: false,
+            grid: Rect::default(),
         }
     }
+
+    /// The pane owns every mouse event so nothing leaks to the editor behind it
+    /// (modal). The wheel is forwarded to the running program (mouse event / arrow
+    /// keys / scrollback, per its mode); drag-selection is intercepted upstream by
+    /// the compositor, so it never reaches here.
+    fn handle_mouse(&mut self, event: &MouseEvent) -> EventResult {
+        let up = match event.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return EventResult::Consumed(None),
+        };
+        if !self.exited {
+            let (col, row) = cell_in(self.grid, event);
+            self.terminal.wheel(up, col, row);
+        }
+        EventResult::Consumed(None)
+    }
+}
+
+/// Map an absolute mouse position to a 0-based cell within `grid`, clamped to
+/// its bounds.
+pub(crate) fn cell_in(grid: Rect, event: &MouseEvent) -> (u16, u16) {
+    let col = event
+        .column
+        .saturating_sub(grid.x)
+        .min(grid.width.saturating_sub(1));
+    let row = event
+        .row
+        .saturating_sub(grid.y)
+        .min(grid.height.saturating_sub(1));
+    (col, row)
 }
 
 impl Component for TerminalPane {
@@ -119,7 +154,7 @@ impl Component for TerminalPane {
         let theme = &ctx.editor.theme;
         let base = theme.get("ui.background");
         let text_style = theme.get("ui.text");
-        let border_style = theme.try_get("ui.window").unwrap_or(text_style);
+        let border_style = brighten(theme.try_get("ui.window").unwrap_or(text_style));
         let title_style = border_style.add_modifier(Modifier::BOLD);
 
         surface.clear_with(area, base);
@@ -146,6 +181,7 @@ impl Component for TerminalPane {
             .title(Span::styled(title, title_style));
         let inner = block.inner(area);
         block.render(area, surface);
+        self.grid = inner;
 
         let hint = if self.exited {
             "any key close"
@@ -175,6 +211,7 @@ impl Component for TerminalPane {
                 }
                 return EventResult::Consumed(None);
             }
+            Event::Mouse(mouse) => return self.handle_mouse(mouse),
             _ => return EventResult::Ignored(None),
         };
 
@@ -211,6 +248,20 @@ fn close() -> EventResult {
     EventResult::Consumed(Some(Box::new(|compositor, _| {
         compositor.remove(ID);
     })))
+}
+
+/// Lighten a border style's foreground 25% toward white so the agent/terminal
+/// pane frames read with more contrast against the panel background. Named and
+/// indexed colors are left unchanged (only RGB colors, as produced by hex theme
+/// values like `ui.window`, can be brightened directly).
+pub(crate) fn brighten(style: Style) -> Style {
+    match style.fg {
+        Some(Color::Rgb(r, g, b)) => {
+            let up = |c: u8| c.saturating_add(((255 - c) as f32 * 0.25) as u8);
+            style.fg(Color::Rgb(up(r), up(g), up(b)))
+        }
+        _ => style,
+    }
 }
 
 /// Paint a short key hint into the bottom border of `area`, inset from the

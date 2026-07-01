@@ -9,7 +9,7 @@ use std::time::Duration;
 use helix_core::Position;
 use helix_view::agent::{AgentSessionId, AgentStatus, RightPane, WorktreeInfo};
 use helix_view::graphics::{CursorKind, Modifier, Rect};
-use helix_view::input::{Event, KeyEvent};
+use helix_view::input::{Event, KeyEvent, MouseEvent, MouseEventKind};
 
 use tui::buffer::Buffer as Surface;
 use tui::text::Span;
@@ -41,6 +41,9 @@ pub struct ClaudePanel {
     diff_cache: Option<(AgentSessionId, String)>,
     /// Scroll offset (in lines) of the edits view.
     diff_scroll: u16,
+    /// Grid rect of the focused session's terminal (right pane) from the last
+    /// render, used to map absolute mouse coordinates to terminal cells.
+    term_grid: Rect,
 }
 
 impl ClaudePanel {
@@ -53,6 +56,7 @@ impl ClaudePanel {
             ticker: None,
             diff_cache: None,
             diff_scroll: 0,
+            term_grid: Rect::default(),
         }
     }
 }
@@ -107,7 +111,7 @@ impl Component for ClaudePanel {
         let base = theme.get("ui.background");
         let text_style = theme.get("ui.text");
         let selected_style = theme.get("ui.selection");
-        let border_style = theme.try_get("ui.window").unwrap_or(text_style);
+        let border_style = terminal::brighten(theme.try_get("ui.window").unwrap_or(text_style));
         let title_style = border_style.add_modifier(Modifier::BOLD);
         let attention_style = {
             let s = theme.try_get("ui.agent.attention");
@@ -293,6 +297,7 @@ impl Component for ClaudePanel {
 
         match right_pane {
             RightPane::Terminal => {
+                self.term_grid = content_area;
                 // Resize the emulator to the content area, then render its grid.
                 if let Some(session) = ctx.editor.agents.focused_mut() {
                     session
@@ -352,6 +357,7 @@ impl Component for ClaudePanel {
                 }
                 return EventResult::Consumed(None);
             }
+            Event::Mouse(mouse) => return self.handle_mouse(mouse, ctx),
             _ => return EventResult::Ignored(None),
         };
 
@@ -375,6 +381,40 @@ impl Component for ClaudePanel {
 }
 
 impl ClaudePanel {
+    /// The panel owns every mouse event so nothing leaks to the editor behind it
+    /// (modal). Wheel scrolls whichever right pane is focused — the edits diff or
+    /// the terminal's scrollback. Drag-selection is intercepted upstream by the
+    /// compositor, so it never reaches here.
+    fn handle_mouse(&mut self, event: &MouseEvent, ctx: &mut Context) -> EventResult {
+        let dir = match event.kind {
+            MouseEventKind::ScrollUp => -1,
+            MouseEventKind::ScrollDown => 1,
+            _ => return EventResult::Consumed(None),
+        };
+
+        let viewing_edits = ctx
+            .editor
+            .agents
+            .focused()
+            .map(|s| s.right_pane == RightPane::Edits)
+            .unwrap_or(false);
+        if viewing_edits {
+            // render() clamps diff_scroll to the content, so an over-scroll here
+            // is harmless.
+            self.diff_scroll = if dir < 0 {
+                self.diff_scroll.saturating_sub(3)
+            } else {
+                self.diff_scroll.saturating_add(3)
+            };
+        } else if let Some(session) = ctx.editor.agents.focused() {
+            // Forward the wheel to the agent's terminal (claude runs a full-screen
+            // TUI with mouse reporting, so it scrolls its own transcript).
+            let (col, row) = terminal::cell_in(self.term_grid, event);
+            session.terminal.wheel(dir < 0, col, row);
+        }
+        EventResult::Consumed(None)
+    }
+
     fn handle_list_key(&mut self, key: KeyEvent, ctx: &mut Context) -> EventResult {
         // When the focused session is showing its edits diff, these keys scroll
         // it (session navigation with j/k still works for switching sessions).

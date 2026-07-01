@@ -16,10 +16,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{Config as TermConfig, Term};
+use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor, Processor};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -205,6 +205,50 @@ impl TerminalHandle {
         };
 
         TerminalSnapshot { cells, cursor }
+    }
+
+    /// React to a mouse-wheel notch at grid cell (`col`, `row`), doing whatever
+    /// the running program's current mode calls for — matching how a real
+    /// terminal behaves:
+    ///
+    /// * **Mouse reporting on** (e.g. the `claude` TUI): forward the wheel as a
+    ///   mouse event so the app scrolls its own view. Full-screen apps use the
+    ///   alternate screen and keep no scrollback of their own, so this is the
+    ///   only way to scroll them.
+    /// * **Alternate screen, no mouse reporting**: emit arrow keys ("alternate
+    ///   scroll"), the conventional fallback for full-screen apps.
+    /// * **Normal screen**: scroll our local scrollback buffer.
+    pub fn wheel(&self, up: bool, col: u16, row: u16) {
+        let mode = *self.term.lock().mode();
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            self.report_wheel(mode, up, col, row);
+        } else if mode.contains(TermMode::ALT_SCREEN) {
+            let seq: &[u8] = if up { b"\x1b[A" } else { b"\x1b[B" };
+            for _ in 0..3 {
+                self.write_input(seq);
+            }
+        } else {
+            let delta = if up { 3 } else { -3 };
+            self.term.lock().scroll_display(Scroll::Delta(delta));
+            helix_event::request_redraw();
+        }
+    }
+
+    /// Encode a wheel notch as an X10/SGR mouse event and send it to the child.
+    /// Wheel up/down are buttons 64/65; coordinates are 1-based.
+    fn report_wheel(&self, mode: TermMode, up: bool, col: u16, row: u16) {
+        let button = if up { 64u8 } else { 65u8 };
+        let (cx, cy) = (col.saturating_add(1), row.saturating_add(1));
+        let seq: Vec<u8> = if mode.contains(TermMode::SGR_MOUSE) {
+            format!("\x1b[<{button};{cx};{cy}M").into_bytes()
+        } else {
+            // Legacy encoding: each field is offset by 32; the addressable range
+            // caps at 223 (255 - 32).
+            let bx = (cx.min(223) as u8).saturating_add(32);
+            let by = (cy.min(223) as u8).saturating_add(32);
+            vec![0x1b, b'[', b'M', button + 32, bx, by]
+        };
+        self.write_input(&seq);
     }
 
     /// Feed raw bytes (already encoded for the terminal) to the child's stdin.

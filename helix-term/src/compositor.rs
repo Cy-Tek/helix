@@ -3,6 +3,7 @@
 // cursive does compositor.screen_mut().add_layer_at(pos::absolute(x, y), <component>)
 use helix_core::Position;
 use helix_view::graphics::{CursorKind, Rect};
+use helix_view::input::{MouseButton, MouseEvent, MouseEventKind};
 
 use tui::buffer::Buffer as Surface;
 
@@ -79,9 +80,26 @@ pub trait Component: Any + AnyComponent {
     }
 }
 
+/// In-progress mouse text selection over the composited screen grid. Lets the
+/// user drag-select and copy text from any overlay pane (pickers, terminal,
+/// agent panel, diff, …) even though Helix's mouse capture suppresses the host
+/// terminal's own selection. Coordinates are absolute screen cells.
+struct MouseSelect {
+    anchor: (u16, u16),
+    head: (u16, u16),
+    /// Set once the drag moves off the anchor cell — distinguishes a real
+    /// selection from a plain click.
+    active: bool,
+    /// Set on button release; the next render extracts + copies the text.
+    copy_pending: bool,
+}
+
 pub struct Compositor {
     layers: Vec<Box<dyn Component>>,
     area: Rect,
+
+    /// Active screen-grid mouse selection, if any (see [`MouseSelect`]).
+    mouse_select: Option<MouseSelect>,
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
@@ -92,6 +110,7 @@ impl Compositor {
         Self {
             layers: Vec::new(),
             area,
+            mouse_select: None,
             last_picker: None,
             full_redraw: false,
         }
@@ -154,6 +173,15 @@ impl Compositor {
             }
         }
 
+        // Screen-grid mouse selection takes priority for left-button drags so a
+        // drag never reaches (and selects/moves inside) the pane underneath. A
+        // plain click and the wheel fall through to the layers below.
+        if let Event::Mouse(mouse) = event {
+            if let Some(consumed) = self.handle_mouse_selection(mouse) {
+                return consumed;
+            }
+        }
+
         let mut callbacks = Vec::new();
         let mut consumed = false;
 
@@ -188,6 +216,112 @@ impl Compositor {
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         for layer in &mut self.layers {
             layer.render(area, surface, cx);
+        }
+        // Painted last, over the fully composited frame, so it can both read the
+        // visible text and draw the highlight regardless of which layer drew it.
+        self.paint_mouse_selection(area, surface, cx);
+    }
+
+    /// Update selection state from a mouse event. Returns `Some(consumed)` when
+    /// the event is handled here (left drag / release of an active selection),
+    /// or `None` to let it fall through to the layers.
+    fn handle_mouse_selection(&mut self, event: &MouseEvent) -> Option<bool> {
+        // Only engage while an overlay pane is open; the bare editor keeps its
+        // native mouse selection. `EditorView` is always layer 0.
+        if self.layers.len() <= 1 {
+            self.mouse_select = None;
+            return None;
+        }
+
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_select = Some(MouseSelect {
+                    anchor: (event.column, event.row),
+                    head: (event.column, event.row),
+                    active: false,
+                    copy_pending: false,
+                });
+                // Fall through so the click still reaches the modal pane.
+                None
+            }
+            MouseEventKind::Drag(MouseButton::Left) => match &mut self.mouse_select {
+                Some(sel) => {
+                    sel.head = (event.column, event.row);
+                    if sel.head != sel.anchor {
+                        sel.active = true;
+                    }
+                    helix_event::request_redraw();
+                    Some(true)
+                }
+                None => None,
+            },
+            MouseEventKind::Up(MouseButton::Left) => match &mut self.mouse_select {
+                Some(sel) if sel.active => {
+                    sel.copy_pending = true;
+                    helix_event::request_redraw();
+                    Some(true)
+                }
+                _ => {
+                    // Plain click: drop the pending selection and let the pane
+                    // handle the release.
+                    self.mouse_select = None;
+                    None
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// Highlight the active selection on `surface` and, once the drag has been
+    /// released, extract the visible text (linear/terminal-style) and copy it to
+    /// the system clipboard.
+    fn paint_mouse_selection(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        let sel = match &self.mouse_select {
+            Some(sel) if sel.active || sel.copy_pending => sel,
+            _ => return,
+        };
+
+        // Order the endpoints in reading order (row, then column).
+        let (start, end) = if (sel.anchor.1, sel.anchor.0) <= (sel.head.1, sel.head.0) {
+            (sel.anchor, sel.head)
+        } else {
+            (sel.head, sel.anchor)
+        };
+
+        let sel_style = cx.editor.theme.get("ui.selection");
+        let top = area.top();
+        let bottom = area.bottom().saturating_sub(1);
+        let left = area.left();
+        let last_col = area.right().saturating_sub(1);
+
+        let mut text = String::new();
+        let first_row = start.1.clamp(top, bottom);
+        let last_row = end.1.clamp(top, bottom);
+        for row in first_row..=last_row {
+            let col_start = if row == start.1 { start.0 } else { left }.max(left);
+            let col_end = if row == end.1 { end.0 } else { last_col }.min(last_col);
+
+            if col_start <= col_end {
+                surface.set_style(
+                    Rect::new(col_start, row, col_end - col_start + 1, 1),
+                    sel_style,
+                );
+                let mut line = String::new();
+                for x in col_start..=col_end {
+                    if let Some(cell) = surface.get(x, row) {
+                        line.push_str(cell.symbol.as_str());
+                    }
+                }
+                text.push_str(line.trim_end());
+            }
+            if row != last_row {
+                text.push('\n');
+            }
+        }
+
+        if self.mouse_select.as_ref().is_some_and(|s| s.copy_pending) {
+            let _ = cx.editor.registers.write('+', vec![text]);
+            self.mouse_select = None;
         }
     }
 
