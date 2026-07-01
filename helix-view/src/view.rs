@@ -211,6 +211,13 @@ impl View {
         self.area.clip_left(self.gutter_offset(doc)).clip_bottom(1) // -1 for statusline
     }
 
+    /// The area an embedded terminal fills when this view hosts one: the whole
+    /// pane minus the statusline row, with no gutter (a terminal has no line
+    /// numbers/diagnostics, and gutter-clipping would offset it and steal width).
+    pub fn terminal_area(&self) -> Rect {
+        self.area.clip_bottom(1) // -1 for statusline
+    }
+
     pub fn inner_height(&self) -> usize {
         self.area.clip_bottom(1).height.into() // -1 for statusline
     }

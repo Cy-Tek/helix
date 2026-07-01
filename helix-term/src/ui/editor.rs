@@ -140,12 +140,14 @@ impl EditorView {
         let loader = editor.syn_loader.load();
 
         // Terminal buffers: blit the emulator grid and skip all text machinery
-        // (gutters, syntax, diagnostics, selections don't apply).
+        // (gutters, syntax, diagnostics, selections don't apply). Fill the whole
+        // pane (no gutter) so the emulator isn't offset or narrowed.
         if let Some(term_ref) = editor.terminal_docs.get(&view.doc).copied() {
-            surface.set_style(inner, editor.theme.get("ui.background"));
+            let term_area = view.terminal_area();
+            surface.set_style(term_area, editor.theme.get("ui.background"));
             if let Some(handle) = editor.resolve_terminal(&term_ref) {
-                handle.resize(inner.height, inner.width);
-                let _ = crate::ui::terminal::render(handle, inner, surface);
+                handle.resize(term_area.height, term_area.width);
+                let _ = crate::ui::terminal::render(handle, term_area, surface);
             }
             // Right border between splits, matching the text path below.
             if viewport.right() != view.area.right() {
@@ -1456,8 +1458,7 @@ impl EditorView {
                 if let Some(term_ref) = cxt.editor.terminal_docs.get(&doc_id).copied() {
                     if let Some(handle) = cxt.editor.resolve_terminal(&term_ref) {
                         let view = cxt.editor.tree.get(view_id);
-                        let doc = cxt.editor.document(doc_id).unwrap();
-                        let inner = view.inner_area(doc);
+                        let inner = view.terminal_area();
                         let col = column
                             .saturating_sub(inner.x)
                             .min(inner.width.saturating_sub(1));
@@ -1727,26 +1728,29 @@ impl Component for EditorView {
                 cx.editor.status_msg = None;
 
                 // Terminal buffers, modal input: in Insert mode, forward keys to
-                // the PTY instead of the editor's insert machinery. Plain Esc is
-                // NOT intercepted, so it falls through to the keymap and exits
-                // insert mode (back to editor/Normal). Shift-Esc (or any modified
-                // Esc) sends a real ESC to the terminal.
+                // the PTY instead of the editor's insert machinery. Plain Esc
+                // returns to Normal mode (handled explicitly here rather than via
+                // keymap fall-through, so it's deterministic for both standalone
+                // terminals and agent sessions). Shift-Esc (or any modified Esc)
+                // sends a real ESC to the terminal.
                 if cx.editor.mode() == Mode::Insert && cx.editor.focused_terminal().is_some() {
                     let plain_esc =
                         key.code == KeyCode::Esc && key.modifiers.is_empty();
-                    if !plain_esc {
-                        let bytes = if key.code == KeyCode::Esc {
-                            Some(vec![0x1b])
-                        } else {
-                            crate::ui::terminal::encode_key(&key)
-                        };
-                        if let Some(bytes) = bytes {
-                            if let Some(handle) = cx.editor.focused_terminal() {
-                                handle.write_input(&bytes);
-                            }
-                        }
+                    if plain_esc {
+                        cx.editor.enter_normal_mode();
                         return EventResult::Consumed(None);
                     }
+                    let bytes = if key.code == KeyCode::Esc {
+                        Some(vec![0x1b])
+                    } else {
+                        crate::ui::terminal::encode_key(&key)
+                    };
+                    if let Some(bytes) = bytes {
+                        if let Some(handle) = cx.editor.focused_terminal() {
+                            handle.write_input(&bytes);
+                        }
+                    }
+                    return EventResult::Consumed(None);
                 }
 
                 let mode = cx.editor.mode();
@@ -1984,8 +1988,7 @@ impl Component for EditorView {
             if editor.mode() == Mode::Insert {
                 if let Some(handle) = editor.resolve_terminal(&term_ref) {
                     let view = editor.tree.get(editor.tree.focus);
-                    let doc = editor.document(focus_doc).unwrap();
-                    let inner = view.inner_area(doc);
+                    let inner = view.terminal_area();
                     if let Some((row, col)) = handle.snapshot().cursor {
                         let pos = Position::new(
                             inner.y as usize + row as usize,

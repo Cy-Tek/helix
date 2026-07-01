@@ -10,6 +10,7 @@ use helix_core::Position;
 use helix_view::agent::{AgentSessionId, AgentStatus, RightPane, WorktreeInfo};
 use helix_view::graphics::{CursorKind, Modifier, Rect};
 use helix_view::input::{Event, KeyEvent, MouseEvent, MouseEventKind};
+use helix_view::keyboard::KeyCode;
 
 use tui::buffer::Buffer as Surface;
 use tui::text::Span;
@@ -173,7 +174,7 @@ impl Component for ClaudePanel {
         } else if list_focused {
             "j/k select · enter focus · Tab edits · t tab · n new · q close · C-q quit"
         } else {
-            "C-o session list · C-q close panel"
+            "esc/C-o session list · S-esc interrupt · C-q close panel"
         };
         terminal::draw_border_hint(surface, area, hint, border_style);
 
@@ -517,6 +518,19 @@ impl ClaudePanel {
         // Escape hatch back to the list (to reach other sessions / new / close).
         if key == ctrl!('o') {
             ctx.editor.agents.list_focused = true;
+            return EventResult::Consumed(None);
+        }
+        // Plain Esc returns to the session list (mirrors a terminal buffer's
+        // Esc -> Normal). Shift-Esc (or any modified Esc) sends a real ESC to
+        // claude, which is how you actually interrupt/clear it.
+        if key.code == KeyCode::Esc {
+            if key.modifiers.is_empty() {
+                ctx.editor.agents.list_focused = true;
+                return EventResult::Consumed(None);
+            }
+            if let Some(session) = ctx.editor.agents.focused() {
+                session.terminal.write_input(&[0x1b]);
+            }
             return EventResult::Consumed(None);
         }
         if let Some(bytes) = terminal::encode_key(&key) {
