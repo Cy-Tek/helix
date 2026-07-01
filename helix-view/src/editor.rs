@@ -2197,6 +2197,27 @@ impl Editor {
         id
     }
 
+    /// Resolve a terminal reference to its live handle, if it still exists.
+    pub fn resolve_terminal(&self, r: &TerminalRef) -> Option<&crate::terminal::TerminalHandle> {
+        match r {
+            TerminalRef::Agent(id) => self.agents.get(*id).map(|s| &s.terminal),
+            TerminalRef::Standalone(id) => self.terminals.get(*id),
+        }
+    }
+
+    /// True when `doc_id` is a terminal-backed host document.
+    pub fn is_terminal_doc(&self, doc_id: DocumentId) -> bool {
+        self.terminal_docs.contains_key(&doc_id)
+    }
+
+    /// The terminal handle behind the currently focused view, if that view
+    /// shows a terminal buffer.
+    pub fn focused_terminal(&self) -> Option<&crate::terminal::TerminalHandle> {
+        let doc_id = self.tree.get(self.tree.focus).doc;
+        let r = self.terminal_docs.get(&doc_id)?;
+        self.resolve_terminal(r)
+    }
+
     fn new_file_from_document(&mut self, action: Action, doc: Document) -> DocumentId {
         let id = self.new_document(doc);
         self.switch(id, action);
