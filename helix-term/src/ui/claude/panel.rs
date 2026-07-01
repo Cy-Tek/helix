@@ -171,7 +171,7 @@ impl Component for ClaudePanel {
         } else if list_focused && viewing_edits {
             "j/k session · C-d/C-u scroll · r refresh · Tab terminal · C-q quit"
         } else if list_focused {
-            "j/k select · enter focus · Tab edits · n new · q close · C-q quit"
+            "j/k select · enter focus · Tab edits · t tab · n new · q close · C-q quit"
         } else {
             "C-o session list · C-q close panel"
         };
@@ -465,6 +465,14 @@ impl ClaudePanel {
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
                     compositor.push(Box::new(prompt));
                 })));
+            }
+            key!('t') => {
+                if let Some(id) = ctx.editor.agents.focused {
+                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                        compositor.remove(ID);
+                        cx.editor.open_agent_tab(id);
+                    })));
+                }
             }
             key!(Tab) => {
                 if let Some(session) = ctx.editor.agents.focused_mut() {

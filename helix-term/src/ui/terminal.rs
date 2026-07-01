@@ -117,6 +117,11 @@ impl TerminalPane {
         }
     }
 
+    /// Consume the pane, returning its terminal handle for registry ownership.
+    pub fn into_handle(self) -> TerminalHandle {
+        self.terminal
+    }
+
     /// The pane owns every mouse event so nothing leaks to the editor behind it
     /// (modal). The wheel is forwarded to the running program (mouse event / arrow
     /// keys / scrollback, per its mode); drag-selection is intercepted upstream by

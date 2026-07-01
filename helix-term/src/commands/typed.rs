@@ -3095,6 +3095,38 @@ fn open_terminal(
     Ok(())
 }
 
+fn open_terminal_tab(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
+    let pane = ui::terminal::spawn_terminal(cx.editor, &args)?;
+    let handle = pane.into_handle();
+    cx.editor.open_terminal_tab(handle);
+    Ok(())
+}
+
+fn open_agent_tab(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    match cx.editor.agents.focused {
+        Some(id) => {
+            cx.editor.open_agent_tab(id);
+            Ok(())
+        }
+        None => anyhow::bail!("no focused agent session"),
+    }
+}
+
 fn claude_new(
     cx: &mut compositor::Context,
     args: Args,
@@ -3247,6 +3279,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::all(completers::program),
         signature: Signature {
             positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-tab",
+        aliases: &[],
+        doc: "Open a terminal in a new buffer/tab.",
+        fun: open_terminal_tab,
+        completer: CommandCompleter::all(completers::program),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "agent-tab",
+        aliases: &[],
+        doc: "Open the focused Claude agent in a new buffer/tab.",
+        fun: open_agent_tab,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

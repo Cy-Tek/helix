@@ -801,13 +801,17 @@ impl EditorView {
                 editor.projects.project_for_document(doc.id()) == Some(project)
             })
         }) {
-            let fname = doc
-                .path()
-                .unwrap_or(&scratch)
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default();
+            let fname = match editor.doc_display_name(doc.id()) {
+                Some(label) => label,
+                None => doc
+                    .path()
+                    .unwrap_or(&scratch)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            };
 
             let style = if current_doc == doc.id() {
                 bufferline_active

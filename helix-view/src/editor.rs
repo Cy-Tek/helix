@@ -2218,6 +2218,18 @@ impl Editor {
         self.resolve_terminal(r)
     }
 
+    /// Human label for a document, terminal-aware. Used by the bufferline and
+    /// statusline so terminal tabs read as `[agent N]` / `[term]`.
+    pub fn doc_display_name(&self, doc_id: DocumentId) -> Option<String> {
+        match self.terminal_docs.get(&doc_id)? {
+            TerminalRef::Agent(id) => self
+                .agents
+                .get(*id)
+                .map(|s| format!("[{}]", s.display_name)),
+            TerminalRef::Standalone(_) => Some("[terminal]".to_string()),
+        }
+    }
+
     /// Register `handle` as a standalone terminal and open it in a new host
     /// buffer, switching the current view to it. Returns the host document id.
     pub fn open_terminal_tab(&mut self, handle: crate::terminal::TerminalHandle) -> DocumentId {
