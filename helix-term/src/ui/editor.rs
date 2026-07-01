@@ -1691,6 +1691,29 @@ impl Component for EditorView {
                 // clear status
                 cx.editor.status_msg = None;
 
+                // Terminal buffers, modal input: in Insert mode, forward keys to
+                // the PTY instead of the editor's insert machinery. Plain Esc is
+                // NOT intercepted, so it falls through to the keymap and exits
+                // insert mode (back to editor/Normal). Shift-Esc (or any modified
+                // Esc) sends a real ESC to the terminal.
+                if cx.editor.mode() == Mode::Insert && cx.editor.focused_terminal().is_some() {
+                    let plain_esc =
+                        key.code == KeyCode::Esc && key.modifiers.is_empty();
+                    if !plain_esc {
+                        let bytes = if key.code == KeyCode::Esc {
+                            Some(vec![0x1b])
+                        } else {
+                            crate::ui::terminal::encode_key(&key)
+                        };
+                        if let Some(bytes) = bytes {
+                            if let Some(handle) = cx.editor.focused_terminal() {
+                                handle.write_input(&bytes);
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                }
+
                 let mode = cx.editor.mode();
 
                 if !self.on_next_key(OnKeyCallbackKind::PseudoPending, &mut cx, key) {

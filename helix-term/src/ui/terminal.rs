@@ -443,6 +443,15 @@ mod tests {
     }
 
     #[test]
+    fn plain_escape_byte_is_1b() {
+        // Shift-Esc forwards a bare ESC to the PTY.
+        assert_eq!(
+            encode_key(&key(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(vec![0x1b])
+        );
+    }
+
+    #[test]
     fn arrow_keys_plain_and_modified() {
         assert_eq!(
             encode_key(&key(KeyCode::Up, KeyModifiers::NONE)),
