@@ -117,9 +117,10 @@ impl TerminalPane {
         }
     }
 
-    /// Consume the pane, returning its terminal handle for registry ownership.
-    pub fn into_handle(self) -> TerminalHandle {
-        self.terminal
+    /// Consume the pane, returning its handle and display title for registering
+    /// it as a managed terminal session.
+    pub fn into_parts(self) -> (TerminalHandle, String) {
+        (self.terminal, self.title)
     }
 
     /// The pane owns every mouse event so nothing leaks to the editor behind it

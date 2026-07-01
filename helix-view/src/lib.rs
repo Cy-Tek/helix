@@ -18,6 +18,7 @@ pub mod notifications;
 pub mod project;
 pub mod register;
 pub mod terminal;
+pub mod terminal_registry;
 pub mod theme;
 pub mod tree;
 pub mod view;

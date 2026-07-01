@@ -3104,9 +3104,11 @@ fn open_terminal_tab(
         return Ok(());
     }
     let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
+    let command = args.join(" ");
+    let cwd = helix_core::find_workspace().0;
     let pane = ui::terminal::spawn_terminal(cx.editor, &args)?;
-    let handle = pane.into_handle();
-    cx.editor.open_terminal_tab(handle);
+    let (handle, name) = pane.into_parts();
+    cx.editor.open_terminal_tab(name, command, cwd, handle);
     Ok(())
 }
 

@@ -1352,11 +1352,7 @@ use futures_util::stream::{Flatten, Once};
 
 type Diagnostics = BTreeMap<Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>>;
 
-slotmap::new_key_type! {
-    /// Editor-local handle to a standalone (`:terminal`) embedded terminal,
-    /// stable across removals — mirrors `AgentSessionId` for agents.
-    pub struct TerminalId;
-}
+pub use crate::terminal_registry::TerminalId;
 
 /// What a terminal-backed buffer resolves to.
 #[derive(Clone, Copy, Debug)]
@@ -1395,9 +1391,10 @@ pub struct Editor {
 
     /// Managed Claude Code agent sessions (embedded `claude` terminals).
     pub agents: crate::agent::AgentRegistry,
-    /// Standalone embedded terminals (the `:terminal` command), kept alive
-    /// independently of any view so a terminal survives closing its tab.
-    pub terminals: slotmap::SlotMap<TerminalId, crate::terminal::TerminalHandle>,
+    /// Managed standalone embedded terminals (the `:terminals` panel and
+    /// `:terminal-tab`), kept alive independently of any view so a terminal
+    /// survives closing its tab. Mirrors `agents`.
+    pub terminals: crate::terminal_registry::TerminalRegistry,
     /// Maps a host document to the terminal it displays. A host document is a
     /// read-only, empty scratch buffer that exists only to make a terminal a
     /// navigable buffer (gp/gn, splits, bufferline).
@@ -1563,7 +1560,7 @@ impl Editor {
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
             agents: crate::agent::AgentRegistry::new(),
-            terminals: slotmap::SlotMap::with_key(),
+            terminals: crate::terminal_registry::TerminalRegistry::new(),
             terminal_docs: std::collections::HashMap::new(),
             syn_loader,
             theme_loader,
@@ -2205,7 +2202,7 @@ impl Editor {
     pub fn resolve_terminal(&self, r: &TerminalRef) -> Option<&crate::terminal::TerminalHandle> {
         match r {
             TerminalRef::Agent(id) => self.agents.get(*id).map(|s| &s.terminal),
-            TerminalRef::Standalone(id) => self.terminals.get(*id),
+            TerminalRef::Standalone(id) => self.terminals.get(*id).map(|s| &s.terminal),
         }
     }
 
@@ -2230,15 +2227,41 @@ impl Editor {
                 .agents
                 .get(*id)
                 .map(|s| format!("[{}]", s.display_name)),
-            TerminalRef::Standalone(_) => Some("[terminal]".to_string()),
+            TerminalRef::Standalone(id) => Some(
+                self.terminals
+                    .get(*id)
+                    .map(|s| format!("[{}]", s.name))
+                    .unwrap_or_else(|| "[terminal]".to_string()),
+            ),
         }
     }
 
-    /// Register `handle` as a standalone terminal and open it in a new host
-    /// buffer, switching the current view to it. Returns the host document id.
-    pub fn open_terminal_tab(&mut self, handle: crate::terminal::TerminalHandle) -> DocumentId {
-        let term_id = self.terminals.insert(handle);
+    /// Register a spawned terminal as a standalone session and open it in a new
+    /// host buffer, switching the current view to it. Returns the host doc id.
+    pub fn open_terminal_tab(
+        &mut self,
+        name: String,
+        command: String,
+        cwd: std::path::PathBuf,
+        handle: crate::terminal::TerminalHandle,
+    ) -> DocumentId {
+        let term_id = self.terminals.register(name, command, cwd, handle);
         self.open_terminal_ref(TerminalRef::Standalone(term_id))
+    }
+
+    /// Open an existing standalone terminal session as a host buffer (tab),
+    /// reusing an existing tab for that terminal if present.
+    pub fn open_terminal_session_tab(&mut self, id: TerminalId) -> DocumentId {
+        if let Some((doc_id, _)) = self
+            .terminal_docs
+            .iter()
+            .find(|(_, r)| matches!(r, TerminalRef::Standalone(tid) if *tid == id))
+        {
+            let doc_id = *doc_id;
+            self.switch(doc_id, Action::Replace);
+            return doc_id;
+        }
+        self.open_terminal_ref(TerminalRef::Standalone(id))
     }
 
     /// Open an existing agent session as a host buffer (tab), switching the
