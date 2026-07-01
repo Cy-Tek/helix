@@ -2392,6 +2392,10 @@ impl Editor {
         let doc = self.documents.remove(&doc_id).unwrap();
         self.projects.remove_document(doc_id);
 
+        // A terminal host document: drop its binding. The underlying handle is
+        // owned by a registry (agents / terminals) and intentionally survives.
+        self.terminal_docs.remove(&doc_id);
+
         // If the document we removed was visible in all views, we will have no more views. We don't
         // want to close the editor just for a simple buffer close, so we need to create a new view
         // containing either an existing document, or a brand new document.
