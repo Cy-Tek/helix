@@ -2086,6 +2086,10 @@ impl Editor {
                 let remove_empty_scratch = !doc.is_modified()
                     // If the buffer has no path and is not modified, it is an empty scratch buffer.
                     && doc.path().is_none()
+                    // A terminal host document is a path-less, unmodified scratch buffer,
+                    // but it must survive navigating away so the tab can be returned to
+                    // (gp/gn) and its live session stays reachable.
+                    && !self.terminal_docs.contains_key(&doc.id)
                     // If the buffer we are changing to is not this buffer
                     && id != doc.id
                     // Ensure the buffer is not displayed in any other splits.
