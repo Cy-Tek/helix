@@ -261,6 +261,13 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "t" => claude_toggle_right_pane,
                 "f" => claude_toggle_terminal_focus,
             },
+            "T" => { "Terminals"
+                "t" => terminals_toggle_panel,
+                "n" => terminals_new_shell,
+                "c" => terminals_run_command,
+                "k" => terminals_kill_focused,
+                "f" => terminals_toggle_focus,
+            },
             "t" => open_terminal,
             "n" => notification_action,
             "N" => notification_dismiss,

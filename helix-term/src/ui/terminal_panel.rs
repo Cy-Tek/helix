@@ -120,7 +120,7 @@ pub(crate) fn spawn_session(editor: &mut Editor, args: &[String]) -> anyhow::Res
 }
 
 /// Prompt for a command line, then spawn it as a new managed terminal.
-fn command_prompt() -> Prompt {
+pub(crate) fn command_prompt() -> Prompt {
     Prompt::new(
         "terminal command: ".into(),
         None,

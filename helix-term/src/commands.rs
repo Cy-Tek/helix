@@ -437,6 +437,11 @@ impl MappableCommand {
         claude_focus_next_attention, "Focus the next Claude agent awaiting attention",
         claude_toggle_right_pane, "Toggle the agent panel's right pane (terminal/edits)",
         claude_toggle_terminal_focus, "Toggle keyboard focus between the agent list and terminal",
+        terminals_toggle_panel, "Toggle the terminals panel",
+        terminals_new_shell, "Open a new shell in the terminals panel",
+        terminals_run_command, "Run a command in a new managed terminal",
+        terminals_kill_focused, "Kill the focused managed terminal",
+        terminals_toggle_focus, "Toggle keyboard focus between the terminal list and terminal",
         notification_action, "Act on the newest actionable toast notification",
         notification_dismiss, "Dismiss the newest toast notification",
         code_action, "Perform code action",
@@ -3888,6 +3893,56 @@ fn claude_toggle_right_pane(cx: &mut Context) {
 
 fn claude_toggle_terminal_focus(cx: &mut Context) {
     cx.editor.agents.list_focused = !cx.editor.agents.list_focused;
+}
+
+fn terminals_toggle_panel(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        use crate::ui::overlay::Overlay;
+        use crate::ui::terminal_panel::{TerminalsPanel, ID};
+        if compositor.find_id::<Overlay<TerminalsPanel>>(ID).is_some() {
+            compositor.remove(ID);
+        } else {
+            compositor.push(Box::new(overlaid(TerminalsPanel::new())));
+        }
+    }));
+}
+
+/// Ensure the terminals panel is the front layer, pushing it if absent.
+fn terminals_open_panel(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        use crate::ui::overlay::Overlay;
+        use crate::ui::terminal_panel::{TerminalsPanel, ID};
+        if compositor.find_id::<Overlay<TerminalsPanel>>(ID).is_none() {
+            compositor.push(Box::new(overlaid(TerminalsPanel::new())));
+        }
+    }));
+}
+
+fn terminals_new_shell(cx: &mut Context) {
+    match crate::ui::terminal_panel::spawn_session(cx.editor, &[]) {
+        Ok(_) => terminals_open_panel(cx),
+        Err(err) => cx.editor.set_error(err.to_string()),
+    }
+}
+
+fn terminals_run_command(cx: &mut Context) {
+    terminals_open_panel(cx);
+    let prompt = crate::ui::terminal_panel::command_prompt();
+    cx.callback.push(Box::new(move |compositor, _cx| {
+        compositor.push(Box::new(prompt));
+    }));
+}
+
+fn terminals_kill_focused(cx: &mut Context) {
+    if let Some(id) = cx.editor.terminals.focused {
+        cx.editor.terminals.remove(id);
+    } else {
+        cx.editor.set_status("No focused terminal");
+    }
+}
+
+fn terminals_toggle_focus(cx: &mut Context) {
+    cx.editor.terminals.list_focused = !cx.editor.terminals.list_focused;
 }
 
 /// Act on the newest actionable toast (and dismiss it). The single universal
