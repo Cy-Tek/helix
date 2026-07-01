@@ -2218,6 +2218,38 @@ impl Editor {
         self.resolve_terminal(r)
     }
 
+    /// Register `handle` as a standalone terminal and open it in a new host
+    /// buffer, switching the current view to it. Returns the host document id.
+    pub fn open_terminal_tab(&mut self, handle: crate::terminal::TerminalHandle) -> DocumentId {
+        let term_id = self.terminals.insert(handle);
+        self.open_terminal_ref(TerminalRef::Standalone(term_id))
+    }
+
+    /// Open an existing agent session as a host buffer (tab), switching the
+    /// current view to it. Reuses an existing tab for that session if present.
+    pub fn open_agent_tab(&mut self, session: crate::agent::AgentSessionId) -> DocumentId {
+        if let Some((doc_id, _)) = self
+            .terminal_docs
+            .iter()
+            .find(|(_, r)| matches!(r, TerminalRef::Agent(id) if *id == session))
+        {
+            let doc_id = *doc_id;
+            self.switch(doc_id, Action::Replace);
+            return doc_id;
+        }
+        self.open_terminal_ref(TerminalRef::Agent(session))
+    }
+
+    /// Shared: create a read-only empty host document bound to `r`, then switch.
+    fn open_terminal_ref(&mut self, r: TerminalRef) -> DocumentId {
+        let mut doc = Document::default(self.config.clone(), self.syn_loader.clone());
+        doc.readonly = true;
+        let doc_id = self.new_document(doc);
+        self.terminal_docs.insert(doc_id, r);
+        self.switch(doc_id, Action::Replace);
+        doc_id
+    }
+
     fn new_file_from_document(&mut self, action: Action, doc: Document) -> DocumentId {
         let id = self.new_document(doc);
         self.switch(id, action);
