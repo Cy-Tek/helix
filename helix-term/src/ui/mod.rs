@@ -19,6 +19,7 @@ pub mod prompt;
 mod select;
 mod spinner;
 pub(crate) mod terminal;
+pub(crate) mod terminal_panel;
 mod statusline;
 mod text;
 mod text_decorations;

@@ -3112,6 +3112,37 @@ fn open_terminal_tab(
     Ok(())
 }
 
+fn open_terminals_panel(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    // With arguments, spawn that command as a new managed terminal; either way
+    // open (or reveal) the terminals panel.
+    let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
+    if !args.is_empty() {
+        ui::terminal_panel::spawn_session(cx.editor, &args)?;
+    }
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                use crate::ui::overlay::Overlay;
+                use crate::ui::terminal_panel::{TerminalsPanel, ID};
+                if compositor.find_id::<Overlay<TerminalsPanel>>(ID).is_none() {
+                    compositor.push(Box::new(overlaid(TerminalsPanel::new())));
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 fn open_agent_tab(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3289,6 +3320,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open a terminal in a new buffer/tab.",
         fun: open_terminal_tab,
+        completer: CommandCompleter::all(completers::program),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminals",
+        aliases: &["terms"],
+        doc: "Open the terminals panel (manages multiple terminals with process status). With arguments, first starts that command as a new terminal.",
+        fun: open_terminals_panel,
         completer: CommandCompleter::all(completers::program),
         signature: Signature {
             positionals: (0, None),
