@@ -90,7 +90,8 @@ impl Drop for AnimationTicker {
 
 fn status_glyph(status: TerminalStatus) -> &'static str {
     match status {
-        TerminalStatus::NotStarted => "○",
+        TerminalStatus::NotStarted => "·",
+        TerminalStatus::Idle => "○",
         TerminalStatus::InProgress => "●",
         TerminalStatus::Succeeded => "✓",
         TerminalStatus::Failed => "✗",
@@ -99,7 +100,8 @@ fn status_glyph(status: TerminalStatus) -> &'static str {
 
 fn status_label(status: TerminalStatus) -> &'static str {
     match status {
-        TerminalStatus::NotStarted => "idle",
+        TerminalStatus::NotStarted => "queued",
+        TerminalStatus::Idle => "idle",
         TerminalStatus::InProgress => "running",
         TerminalStatus::Succeeded => "done",
         TerminalStatus::Failed => "failed",

@@ -21,9 +21,12 @@ slotmap::new_key_type! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalStatus {
     /// Registered but the child process has not been spawned yet. Reserved for
-    /// future queued terminals; terminals spawned today start `InProgress`.
+    /// future queued terminals; terminals spawned today start running.
     NotStarted,
-    /// The child process is running.
+    /// An interactive shell sitting at its prompt with no foreground command.
+    Idle,
+    /// A foreground command is actively running (a direct command, or a command
+    /// launched inside an interactive shell).
     InProgress,
     /// The child process exited with status 0.
     Succeeded,
@@ -52,8 +55,12 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    /// Refresh `status` from the child's exit state. Once the process has exited,
-    /// the status settles to `Succeeded`/`Failed` and never changes again.
+    /// Refresh `status` from the child. Once the process has exited the status
+    /// settles to `Succeeded`/`Failed` and never changes again. While alive, a
+    /// bare interactive shell reports `Idle` at its prompt and `InProgress`
+    /// while a foreground command runs (detected via the terminal's foreground
+    /// process group); a terminal launched with an explicit command counts as
+    /// `InProgress` for as long as it is alive.
     pub fn refresh_status(&mut self) {
         if self.status.is_finished() {
             return;
@@ -62,9 +69,16 @@ impl TerminalSession {
             Some(0) => self.status = TerminalStatus::Succeeded,
             Some(_) => self.status = TerminalStatus::Failed,
             None => {
-                if self.status == TerminalStatus::NotStarted {
-                    self.status = TerminalStatus::InProgress;
-                }
+                self.status = if self.command.is_empty() {
+                    // Interactive shell: idle at the prompt (shell owns the
+                    // foreground) vs running a foreground command.
+                    match self.terminal.foreground_is_child() {
+                        Some(true) => TerminalStatus::Idle,
+                        _ => TerminalStatus::InProgress,
+                    }
+                } else {
+                    TerminalStatus::InProgress
+                };
             }
         }
     }

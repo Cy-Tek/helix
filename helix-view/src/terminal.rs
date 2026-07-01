@@ -310,6 +310,22 @@ impl TerminalHandle {
             .map(|status| status.exit_code() as i32)
     }
 
+    /// Whether the child process itself currently owns the terminal's
+    /// foreground process group — i.e. an interactive shell sitting at its
+    /// prompt with no foreground command running. `None` when it can't be
+    /// determined (non-unix, or the pgrp/pid query failed).
+    #[cfg(unix)]
+    pub fn foreground_is_child(&self) -> Option<bool> {
+        let fg = self.master.process_group_leader()?;
+        let pid = self.child.lock().process_id()?;
+        Some(fg as i64 == pid as i64)
+    }
+
+    #[cfg(not(unix))]
+    pub fn foreground_is_child(&self) -> Option<bool> {
+        None
+    }
+
     /// Kill the child process. Idempotent.
     pub fn kill(&self) {
         let _ = self.child.lock().kill();
