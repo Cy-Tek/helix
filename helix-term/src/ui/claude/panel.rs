@@ -299,7 +299,7 @@ impl Component for ClaudePanel {
             RightPane::Terminal => {
                 self.term_grid = content_area;
                 // Resize the emulator to the content area, then render its grid.
-                if let Some(session) = ctx.editor.agents.focused_mut() {
+                if let Some(session) = ctx.editor.agents.focused() {
                     session
                         .terminal
                         .resize(content_area.height, content_area.width);

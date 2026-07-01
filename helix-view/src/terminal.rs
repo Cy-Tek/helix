@@ -11,6 +11,7 @@
 //! This module is intentionally the *only* place that touches the terminal
 //! emulator and PTY crates, so a dependency bump is a one-file change.
 
+use std::cell::Cell as StdCell;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -89,7 +90,7 @@ pub struct TerminalHandle {
     writer: SharedWriter,
     master: Box<dyn MasterPty + Send>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
-    size: TerminalSize,
+    size: StdCell<TerminalSize>,
 }
 
 impl TerminalHandle {
@@ -152,12 +153,12 @@ impl TerminalHandle {
             writer,
             master: pair.master,
             child: Arc::new(Mutex::new(child)),
-            size,
+            size: StdCell::new(size),
         })
     }
 
     pub fn size(&self) -> TerminalSize {
-        self.size
+        self.size.get()
     }
 
     /// Take a neutral snapshot of the visible grid for rendering. Coordinates
@@ -259,14 +260,14 @@ impl TerminalHandle {
     }
 
     /// Resize both the PTY and the emulator. No-op when unchanged.
-    pub fn resize(&mut self, rows: u16, cols: u16) {
+    pub fn resize(&self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);
         let new = TerminalSize {
             columns: cols as usize,
             screen_lines: rows as usize,
         };
-        if new == self.size {
+        if new == self.size.get() {
             return;
         }
         let _ = self.master.resize(PtySize {
@@ -276,7 +277,7 @@ impl TerminalHandle {
             pixel_height: 0,
         });
         self.term.lock().resize(new);
-        self.size = new;
+        self.size.set(new);
     }
 
     /// True once the child process has exited.
