@@ -177,7 +177,7 @@ impl Compositor {
         // drag never reaches (and selects/moves inside) the pane underneath. A
         // plain click and the wheel fall through to the layers below.
         if let Event::Mouse(mouse) = event {
-            if let Some(consumed) = self.handle_mouse_selection(mouse) {
+            if let Some(consumed) = self.handle_mouse_selection(mouse, cx.editor) {
                 return consumed;
             }
         }
@@ -225,10 +225,13 @@ impl Compositor {
     /// Update selection state from a mouse event. Returns `Some(consumed)` when
     /// the event is handled here (left drag / release of an active selection),
     /// or `None` to let it fall through to the layers.
-    fn handle_mouse_selection(&mut self, event: &MouseEvent) -> Option<bool> {
-        // Only engage while an overlay pane is open; the bare editor keeps its
-        // native mouse selection. `EditorView` is always layer 0.
-        if self.layers.len() <= 1 {
+    fn handle_mouse_selection(&mut self, event: &MouseEvent, editor: &Editor) -> Option<bool> {
+        // Engage screen-grid selection when an overlay pane is open OR the
+        // focused editor view is a terminal buffer (so drag-select-copy works
+        // in terminal tabs). Otherwise the bare editor keeps its native mouse
+        // selection. `EditorView` is always layer 0.
+        let terminal_focused = editor.is_terminal_doc(editor.tree.get(editor.tree.focus).doc);
+        if self.layers.len() <= 1 && !terminal_focused {
             self.mouse_select = None;
             return None;
         }

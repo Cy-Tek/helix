@@ -1434,6 +1434,28 @@ impl EditorView {
             })
         };
 
+        // Forward the wheel to a terminal-doc emulator when the pointer is over
+        // one, so scrollback works in terminal tabs. Uses the same hit-test as
+        // the rest of this handler.
+        if let MouseEventKind::ScrollUp | MouseEventKind::ScrollDown = kind {
+            if let Some((_, view_id)) = pos_and_view(cxt.editor, row, column, false) {
+                let doc_id = cxt.editor.tree.get(view_id).doc;
+                if let Some(term_ref) = cxt.editor.terminal_docs.get(&doc_id).copied() {
+                    if let Some(handle) = cxt.editor.resolve_terminal(&term_ref) {
+                        let view = cxt.editor.tree.get(view_id);
+                        let doc = cxt.editor.document(doc_id).unwrap();
+                        let inner = view.inner_area(doc);
+                        let col = column
+                            .saturating_sub(inner.x)
+                            .min(inner.width.saturating_sub(1));
+                        let row = row.saturating_sub(inner.y).min(inner.height.saturating_sub(1));
+                        handle.wheel(matches!(kind, MouseEventKind::ScrollUp), col, row);
+                        return EventResult::Consumed(None);
+                    }
+                }
+            }
+        }
+
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
