@@ -135,10 +135,24 @@ impl EditorView {
         is_focused: bool,
     ) {
         let inner = view.inner_area(doc);
-        let area = view.area;
         let theme = &editor.theme;
         let config = editor.config();
         let loader = editor.syn_loader.load();
+
+        // Terminal buffers: blit the emulator grid and skip all text machinery
+        // (gutters, syntax, diagnostics, selections don't apply).
+        if let Some(term_ref) = editor.terminal_docs.get(&view.doc).copied() {
+            surface.set_style(inner, editor.theme.get("ui.background"));
+            if let Some(handle) = editor.resolve_terminal(&term_ref) {
+                handle.resize(inner.height, inner.width);
+                let _ = crate::ui::terminal::render(handle, inner, surface);
+            }
+            // Right border between splits, matching the text path below.
+            if viewport.right() != view.area.right() {
+                Self::draw_split_border(surface, view, &editor.theme);
+            }
+            return;
+        }
 
         let view_offset = doc.view_offset(view.id);
 
@@ -270,14 +284,7 @@ impl EditorView {
 
         // if we're not at the edge of the screen, draw a right border
         if viewport.right() != view.area.right() {
-            let x = area.right();
-            let border_style = theme.get("ui.window");
-            for y in area.top()..area.bottom() {
-                surface[(x, y)]
-                    .set_symbol(tui::symbols::line::VERTICAL)
-                    //.set_symbol(" ")
-                    .set_style(border_style);
-            }
+            Self::draw_split_border(surface, view, theme);
         }
 
         if config.inline_diagnostics.disabled()
@@ -295,6 +302,21 @@ impl EditorView {
             statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
 
         statusline::render(&mut context, statusline_area, surface);
+    }
+
+    /// Draw the right border between horizontally-adjacent splits.
+    /// Callers are responsible for checking that the view is not at the
+    /// right edge of the screen before calling.
+    fn draw_split_border(surface: &mut Surface, view: &View, theme: &Theme) {
+        let area = view.area;
+        let x = area.right();
+        let border_style = theme.get("ui.window");
+        for y in area.top()..area.bottom() {
+            surface[(x, y)]
+                .set_symbol(tui::symbols::line::VERTICAL)
+                //.set_symbol(" ")
+                .set_style(border_style);
+        }
     }
 
     pub fn render_rulers(
