@@ -1919,6 +1919,26 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        // A focused terminal buffer shows the emulator cursor only while the
+        // user is driving it (Insert mode); otherwise it's hidden.
+        let focus_doc = editor.tree.get(editor.tree.focus).doc;
+        if let Some(term_ref) = editor.terminal_docs.get(&focus_doc).copied() {
+            if editor.mode() == Mode::Insert {
+                if let Some(handle) = editor.resolve_terminal(&term_ref) {
+                    let view = editor.tree.get(editor.tree.focus);
+                    let doc = editor.document(focus_doc).unwrap();
+                    let inner = view.inner_area(doc);
+                    if let Some((row, col)) = handle.snapshot().cursor {
+                        let pos = Position::new(
+                            inner.y as usize + row as usize,
+                            inner.x as usize + col as usize,
+                        );
+                        return (Some(pos), CursorKind::Block);
+                    }
+                }
+            }
+            return (None, CursorKind::Hidden);
+        }
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {
