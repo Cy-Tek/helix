@@ -1734,15 +1734,18 @@ impl Component for EditorView {
                 // terminals and agent sessions). Shift-Esc (or any modified Esc)
                 // sends a real ESC to the terminal.
                 if cx.editor.mode() == Mode::Insert && cx.editor.focused_terminal().is_some() {
-                    let plain_esc =
-                        key.code == KeyCode::Esc && key.modifiers.is_empty();
+                    // Under REPORT_ALTERNATE_KEYS the terminal collapses Shift-Esc
+                    // to `Char('\u{1b}')` with SHIFT cleared, so treat that (and any
+                    // modified Esc) as "send a real Escape"; a bare Esc leaves Insert.
+                    let plain_esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
+                    let shift_esc = key.code == KeyCode::Char('\u{1b}')
+                        || (key.code == KeyCode::Esc && !key.modifiers.is_empty());
                     if plain_esc {
                         cx.editor.enter_normal_mode();
                         return EventResult::Consumed(None);
                     }
-                    if key.code == KeyCode::Esc {
-                        // Shift-Esc (or any modified Esc): send a real Escape to
-                        // the child, encoded for its keyboard mode.
+                    if shift_esc {
+                        // Send a real Escape to the child, encoded for its keyboard mode.
                         if let Some(handle) = cx.editor.focused_terminal() {
                             handle.write_escape();
                         }

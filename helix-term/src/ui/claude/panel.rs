@@ -509,11 +509,18 @@ impl ClaudePanel {
         // Plain Esc returns to the session list (mirrors a terminal buffer's
         // Esc -> Normal). Shift-Esc (or any modified Esc) sends a real ESC to
         // claude, which is how you actually interrupt/clear it.
-        if key.code == KeyCode::Esc {
-            if key.modifiers.is_empty() {
-                ctx.editor.agents.list_focused = true;
-                return EventResult::Consumed(None);
-            }
+        // Plain Esc backs out to the list. Shift-Esc sends a real ESC to claude.
+        // Under REPORT_ALTERNATE_KEYS the terminal collapses Shift-Esc to
+        // `Char('\u{1b}')` with the SHIFT bit cleared, so treat that (and any
+        // modified Esc) as the raw-escape trigger.
+        let plain_esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
+        let shift_esc = key.code == KeyCode::Char('\u{1b}')
+            || (key.code == KeyCode::Esc && !key.modifiers.is_empty());
+        if plain_esc {
+            ctx.editor.agents.list_focused = true;
+            return EventResult::Consumed(None);
+        }
+        if shift_esc {
             if let Some(session) = ctx.editor.agents.focused() {
                 session.terminal.write_escape();
             }
