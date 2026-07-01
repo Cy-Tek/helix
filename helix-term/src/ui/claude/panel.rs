@@ -515,7 +515,7 @@ impl ClaudePanel {
                 return EventResult::Consumed(None);
             }
             if let Some(session) = ctx.editor.agents.focused() {
-                session.terminal.write_input(&[0x1b]);
+                session.terminal.write_escape();
             }
             return EventResult::Consumed(None);
         }

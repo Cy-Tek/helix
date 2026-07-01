@@ -1740,12 +1740,13 @@ impl Component for EditorView {
                         cx.editor.enter_normal_mode();
                         return EventResult::Consumed(None);
                     }
-                    let bytes = if key.code == KeyCode::Esc {
-                        Some(vec![0x1b])
-                    } else {
-                        crate::ui::terminal::encode_key(&key)
-                    };
-                    if let Some(bytes) = bytes {
+                    if key.code == KeyCode::Esc {
+                        // Shift-Esc (or any modified Esc): send a real Escape to
+                        // the child, encoded for its keyboard mode.
+                        if let Some(handle) = cx.editor.focused_terminal() {
+                            handle.write_escape();
+                        }
+                    } else if let Some(bytes) = crate::ui::terminal::encode_key(&key) {
                         if let Some(handle) = cx.editor.focused_terminal() {
                             handle.write_input(&bytes);
                         }

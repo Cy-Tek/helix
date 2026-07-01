@@ -265,6 +265,20 @@ impl TerminalHandle {
         let _ = writer.flush();
     }
 
+    /// Send an Escape key press to the child, honoring the child's keyboard
+    /// mode. When it has enabled the kitty keyboard protocol (as `claude` does),
+    /// a bare `0x1b` is treated as the *start* of an escape sequence, not the
+    /// Escape key — the key must be reported as the CSI-u form `ESC [ 27 u`.
+    /// Otherwise a legacy bare ESC is correct.
+    pub fn write_escape(&self) {
+        let mode = *self.term.lock().mode();
+        if mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
+            self.write_input(b"\x1b[27u");
+        } else {
+            self.write_input(b"\x1b");
+        }
+    }
+
     /// Resize both the PTY and the emulator. No-op when unchanged.
     pub fn resize(&self, rows: u16, cols: u16) {
         let rows = rows.max(1);
