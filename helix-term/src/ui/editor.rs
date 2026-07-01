@@ -1734,17 +1734,22 @@ impl Component for EditorView {
                 // terminals and agent sessions). Shift-Esc (or any modified Esc)
                 // sends a real ESC to the terminal.
                 if cx.editor.mode() == Mode::Insert && cx.editor.focused_terminal().is_some() {
-                    // Under REPORT_ALTERNATE_KEYS the terminal collapses Shift-Esc
-                    // to `Char('\u{1b}')` with SHIFT cleared, so treat that (and any
-                    // modified Esc) as "send a real Escape"; a bare Esc leaves Insert.
+                    // A bare Esc leaves Insert (back to editor/Normal). To send a
+                    // real Escape to the child instead — e.g. to cancel a claude
+                    // task — use Ctrl-G. (Shift-Esc would be ideal but many
+                    // terminal stacks, notably tmux, never deliver it; Ctrl-G is
+                    // reliable. Modified/alternate-collapsed Esc is honored too,
+                    // for stacks where it does arrive.)
                     let plain_esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
-                    let shift_esc = key.code == KeyCode::Char('\u{1b}')
-                        || (key.code == KeyCode::Esc && !key.modifiers.is_empty());
+                    let send_esc = key.code == KeyCode::Char('\u{1b}')
+                        || (key.code == KeyCode::Esc && !key.modifiers.is_empty())
+                        || (key.code == KeyCode::Char('g')
+                            && key.modifiers.contains(KeyModifiers::CONTROL));
                     if plain_esc {
                         cx.editor.enter_normal_mode();
                         return EventResult::Consumed(None);
                     }
-                    if shift_esc {
+                    if send_esc {
                         // Send a real Escape to the child, encoded for its keyboard mode.
                         if let Some(handle) = cx.editor.focused_terminal() {
                             handle.write_escape();

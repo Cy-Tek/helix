@@ -174,7 +174,7 @@ impl Component for ClaudePanel {
         } else if list_focused {
             "j/k select · enter focus · Tab edits · t tab · n new · q close · C-q quit"
         } else {
-            "esc/C-o session list · S-esc interrupt · C-q quit session"
+            "esc/C-o list · C-g send esc · C-q quit session"
         };
         terminal::draw_border_hint(surface, area, hint, border_style);
 
@@ -507,20 +507,19 @@ impl ClaudePanel {
             return EventResult::Consumed(None);
         }
         // Plain Esc returns to the session list (mirrors a terminal buffer's
-        // Esc -> Normal). Shift-Esc (or any modified Esc) sends a real ESC to
-        // claude, which is how you actually interrupt/clear it.
-        // Plain Esc backs out to the list. Shift-Esc sends a real ESC to claude.
-        // Under REPORT_ALTERNATE_KEYS the terminal collapses Shift-Esc to
-        // `Char('\u{1b}')` with the SHIFT bit cleared, so treat that (and any
-        // modified Esc) as the raw-escape trigger.
+        // Esc -> Normal). Ctrl-G sends a real ESC to claude (e.g. to cancel a
+        // running task). Shift-Esc would be ideal but many terminal stacks
+        // (notably tmux) never deliver it; Ctrl-G is reliable. A modified or
+        // alternate-collapsed Esc is honored too, for stacks where it arrives.
         let plain_esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
-        let shift_esc = key.code == KeyCode::Char('\u{1b}')
+        let send_esc = key == ctrl!('g')
+            || key.code == KeyCode::Char('\u{1b}')
             || (key.code == KeyCode::Esc && !key.modifiers.is_empty());
         if plain_esc {
             ctx.editor.agents.list_focused = true;
             return EventResult::Consumed(None);
         }
-        if shift_esc {
+        if send_esc {
             if let Some(session) = ctx.editor.agents.focused() {
                 session.terminal.write_escape();
             }
